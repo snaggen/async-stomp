@@ -5,7 +5,7 @@ use winnow::{
     ascii::{alpha1, line_ending, till_line_ending},
     combinator::{delimited, opt, repeat, separated_pair, terminated, trace},
     token::{literal, take, take_till, take_until},
-    PResult, Parser,
+    PResult, Parser, Partial,
 };
 
 use std::borrow::Cow;
@@ -101,7 +101,7 @@ fn is_empty_slice(s: &[u8]) -> Option<&[u8]> {
     }
 }
 
-pub(crate) fn parse_frame<'a>(input: &mut &'a [u8]) -> PResult<Frame<'a>> {
+pub fn parse_frame<'a>(input: &mut Partial<&'a [u8]>) -> PResult<Frame<'a>> {
     let (command, headers): (_, Vec<_>) = trace(
         "parse_frame",
         (
@@ -129,7 +129,7 @@ pub(crate) fn parse_frame<'a>(input: &mut &'a [u8]) -> PResult<Frame<'a>> {
     })
 }
 
-fn parse_header<'a>(input: &mut &'a [u8]) -> PResult<Header<'a>> {
+pub fn parse_header<'a>(input: &mut Partial<&'a [u8]>) -> PResult<Header<'a>> {
     trace(
         "parse_header",
         separated_pair(
@@ -546,7 +546,7 @@ login:user
 heart-beat:6,7
 passcode:password\n\n\x00"
             .to_vec();
-        let frame = parse_frame(&mut data.as_slice()).unwrap();
+        let frame = parse_frame(&mut Partial::new(data.as_slice())).unwrap();
         let headers_expect: Vec<(&[u8], &[u8])> = vec![
             (&b"accept-version"[..], &b"1.2"[..]),
             (b"host", b"datafeeds.here.co.uk"),
@@ -569,7 +569,7 @@ accept-version:1.2
 host:datafeeds.here.co.uk
 login:user
 passcode:password\n\n\x00";
-        let frame = parse_frame(&mut data.as_slice()).unwrap();
+        let frame = parse_frame(&mut Partial::new(data.as_slice())).unwrap();
         eprintln!("Frame: {frame:?}");
         let headers_expect: Vec<(&[u8], &[u8])> = vec![
             (&b"accept-version"[..], &b"1.2"[..]),
@@ -587,7 +587,7 @@ passcode:password\n\n\x00";
     /// https://stomp.github.io/stomp-specification-1.2.html#DISCONNECT
     fn parse_and_serialize_client_disconnect() {
         let data = b"DISCONNECT\nreceipt:77\n\n\x00";
-        let frame = parse_frame(&mut data.as_slice()).unwrap();
+        let frame = parse_frame(&mut Partial::new(data.as_slice())).unwrap();
         let headers_expect: Vec<(&[u8], &[u8])> = vec![(b"receipt", b"77")];
 
         assert_eq!(frame.command, b"DISCONNECT");
@@ -605,7 +605,7 @@ passcode:password\n\n\x00";
         let body = b"this body contains no nulls \n and \n newlines OK?";
         data.extend_from_slice(body);
         data.extend_from_slice(b"\x00");
-        let frame = parse_frame(&mut data.as_slice()).unwrap();
+        let frame = parse_frame(&mut Partial::new(data.as_slice())).unwrap();
         let headers_expect: Vec<(&[u8], &[u8])> = vec![(&b"destination"[..], &b"/queue/a"[..])];
         assert_eq!(frame.command, b"SEND");
         parse_and_serialize_to_server(&data, frame, headers_expect, Some(body));
@@ -623,7 +623,7 @@ passcode:password\n\n\x00";
         let body = "this body contains \x00 nulls \n and \r\n newlines \x00 OK?";
         let rest = format!("content-length:{}\n\n{}\x00", body.len(), body);
         data.extend_from_slice(rest.as_bytes());
-        let frame = parse_frame(&mut data.as_slice()).unwrap();
+        let frame = parse_frame(&mut Partial::new(data.as_slice())).unwrap();
         let headers_expect: Vec<(&[u8], &[u8])> = vec![
             (&b"destination"[..], &b"/queue/a"[..]),
             (b"content-type", b"text/html;charset=utf-8"),
