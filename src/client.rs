@@ -1,4 +1,4 @@
-use bytes::{Buf, BytesMut};
+use bytes::BytesMut;
 use futures::prelude::*;
 use futures::sink::SinkExt;
 
@@ -75,15 +75,11 @@ impl Decoder for ClientCodec {
     type Error = anyhow::Error;
 
     fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Item>> {
-        let (item, offset) = match frame::parse_frame(src) {
-            Ok((remain, frame)) => (
-                Message::<FromServer>::from_frame(frame),
-                remain.as_ptr() as usize - src.as_ptr() as usize,
-            ),
+        let item = match frame::parse_frame(&mut &src[..]) {
+            Ok(frame) => Message::<FromServer>::from_frame(frame),
             Err(ErrMode::Incomplete(_)) => return Ok(None),
             Err(e) => bail!("Parse failed: {:?}", e),
         };
-        src.advance(offset);
         item.map(Some)
     }
 }
