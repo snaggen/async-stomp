@@ -2,10 +2,9 @@ use anyhow::{anyhow, bail};
 use bytes::{BufMut, BytesMut};
 
 use winnow::{
+    ascii::{alpha1, line_ending, not_line_ending},
     bytes::{tag, take, take_till1, take_until0},
-    character::{alpha1, line_ending, not_line_ending},
-    combinator::opt,
-    multi::{count, many0, many_till0},
+    combinator::{opt, repeat, repeat_till0},
     sequence::{delimited, separated_pair, terminated},
     IResult, Parser,
 };
@@ -105,15 +104,16 @@ fn is_empty_slice(s: &[u8]) -> Option<&[u8]> {
 
 pub(crate) fn parse_frame(input: &[u8]) -> IResult<&[u8], Frame> {
     // read stream until header end
-    many_till0::<&[u8], &[u8], Vec<u8>, Vec<u8>, winnow::error::Error<&[u8]>, _, _>(
+    repeat_till0::<&[u8], &[u8], Vec<u8>, Vec<u8>, winnow::error::Error<&[u8]>, _, _>(
         take(1_usize),
-        count(line_ending, 2),
-    )(input)?;
+        repeat(1, line_ending),
+    )
+    .parse_next(input)?;
 
     let (input, (command, headers)): (_, (_, Vec<_>)) = (
         delimited(opt(line_ending.complete_err()), alpha1, line_ending), // command
         terminated(
-            many0(parse_header), // header
+            repeat(0.., parse_header), // header
             line_ending,
         ),
     )
