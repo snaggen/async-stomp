@@ -4,6 +4,7 @@ use futures::sink::SinkExt;
 
 use tokio::net::TcpStream;
 use tokio_util::codec::{Decoder, Encoder, Framed};
+use winnow::error::ErrMode;
 
 pub type ClientTransport = Framed<TcpStream, ClientCodec>;
 
@@ -79,7 +80,7 @@ impl Decoder for ClientCodec {
                 Message::<FromServer>::from_frame(frame),
                 remain.as_ptr() as usize - src.as_ptr() as usize,
             ),
-            Err(winnow::Err::Incomplete(_)) => return Ok(None),
+            Err(ErrMode::Incomplete(_)) => return Ok(None),
             Err(e) => bail!("Parse failed: {:?}", e),
         };
         src.advance(offset);

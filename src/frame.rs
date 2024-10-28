@@ -2,11 +2,11 @@ use anyhow::{anyhow, bail};
 use bytes::{BufMut, BytesMut};
 
 use winnow::{
-    bytes::streaming::{is_not, tag, take, take_until},
-    character::streaming::{alpha1, line_ending, not_line_ending},
-    combinator::{complete, opt},
-    multi::{count, many0, many_till},
-    sequence::{delimited, separated_pair, terminated, tuple},
+    bytes::{tag, take, take_till1, take_until0},
+    character::{alpha1, line_ending, not_line_ending},
+    combinator::opt,
+    multi::{count, many0, many_till0},
+    sequence::{delimited, separated_pair, terminated},
     IResult, Parser,
 };
 
@@ -105,23 +105,27 @@ fn is_empty_slice(s: &[u8]) -> Option<&[u8]> {
 
 pub(crate) fn parse_frame(input: &[u8]) -> IResult<&[u8], Frame> {
     // read stream until header end
-    many_till::<&[u8], &[u8], Vec<u8>, Vec<u8>, winnow::error::Error<&[u8]>, _, _>(take(1_usize), count(line_ending, 2))(input)?;
+    many_till0::<&[u8], &[u8], Vec<u8>, Vec<u8>, winnow::error::Error<&[u8]>, _, _>(
+        take(1_usize),
+        count(line_ending, 2),
+    )(input)?;
 
-    let (input, (command, headers)) : (_, (_,Vec<_>)) = tuple((
-        delimited(opt(complete(line_ending)), alpha1, line_ending), // command
+    let (input, (command, headers)): (_, (_, Vec<_>)) = (
+        delimited(opt(line_ending.complete_err()), alpha1, line_ending), // command
         terminated(
             many0(parse_header), // header
             line_ending,
         ),
-    ))(input)?;
+    )
+        .parse_next(input)?;
 
     let (input, body) = match get_content_length(&headers) {
-        None => take_until("\x00").map(is_empty_slice).parse(input)?,
-        Some(length) => take(length).map(Some).parse(input)?,
+        None => take_until0("\x00").map(is_empty_slice).parse_next(input)?,
+        Some(length) => take(length).map(Some).parse_next(input)?,
     };
 
-    let (input, _) = tuple((tag("\x00"), opt(complete(line_ending))))(input)?;
-    
+    let (input, _) = (tag("\x00"), opt(line_ending.complete_err())).parse_next(input)?;
+
     Ok((
         input,
         Frame {
@@ -133,12 +137,13 @@ pub(crate) fn parse_frame(input: &[u8]) -> IResult<&[u8], Frame> {
 }
 
 fn parse_header(input: &[u8]) -> IResult<&[u8], Header> {
-    complete(separated_pair(
-        is_not(":\r\n"),
+    separated_pair(
+        take_till1(":\r\n"),
         tag(":"),
         terminated(not_line_ending, line_ending).map(Cow::Borrowed),
-    ))
-    .parse(input)
+    )
+    .complete_err()
+    .parse_next(input)
 }
 
 fn fetch_header<'a>(headers: &'a [(&'a [u8], Cow<'a, [u8]>)], key: &'a str) -> Option<String> {
@@ -529,8 +534,8 @@ mod tests {
         let mut buffer = BytesMut::new();
         stomp.to_frame().serialize(&mut buffer);
         println!("left: {}", std::str::from_utf8(&buffer).unwrap());
-        println!("right: {}", std::str::from_utf8(&data).unwrap());
-        assert_eq!(&*buffer, &*data, "frame data doesnt match");
+        println!("right: {}", std::str::from_utf8(data).unwrap());
+        assert_eq!(&*buffer, data, "frame data doesnt match");
     }
 
     #[test]
