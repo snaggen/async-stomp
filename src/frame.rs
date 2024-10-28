@@ -3,7 +3,7 @@ use bytes::{BufMut, BytesMut};
 
 use winnow::{
     ascii::{alpha1, line_ending, not_line_ending},
-    bytes::{tag, take, take_till1, take_until0},
+    token::{tag, take, take_till1, take_until0},
     combinator::{opt, repeat, repeat_till0},
     sequence::{delimited, separated_pair, terminated},
     IResult, Parser,
@@ -104,7 +104,7 @@ fn is_empty_slice(s: &[u8]) -> Option<&[u8]> {
 
 pub(crate) fn parse_frame(input: &[u8]) -> IResult<&[u8], Frame> {
     // read stream until header end
-    repeat_till0::<&[u8], &[u8], Vec<u8>, Vec<u8>, winnow::error::Error<&[u8]>, _, _>(
+    repeat_till0::<&[u8], &[u8], Vec<u8>, Vec<u8>, winnow::error::InputError<&[u8]>, _, _>(
         take(1_usize),
         repeat(1, line_ending),
     )
