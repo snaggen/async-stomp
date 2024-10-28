@@ -79,7 +79,7 @@ impl Decoder for ClientCodec {
                 Message::<FromServer>::from_frame(frame),
                 remain.as_ptr() as usize - src.as_ptr() as usize,
             ),
-            Err(nom::Err::Incomplete(_)) => return Ok(None),
+            Err(winnow::Err::Incomplete(_)) => return Ok(None),
             Err(e) => bail!("Parse failed: {:?}", e),
         };
         src.advance(offset);

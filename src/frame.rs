@@ -1,7 +1,7 @@
 use anyhow::{anyhow, bail};
 use bytes::{BufMut, BytesMut};
 
-use nom::{
+use winnow::{
     bytes::streaming::{is_not, tag, take, take_until},
     character::streaming::{alpha1, line_ending, not_line_ending},
     combinator::{complete, opt},
@@ -105,9 +105,9 @@ fn is_empty_slice(s: &[u8]) -> Option<&[u8]> {
 
 pub(crate) fn parse_frame(input: &[u8]) -> IResult<&[u8], Frame> {
     // read stream until header end
-    many_till(take(1_usize), count(line_ending, 2))(input)?;
+    many_till::<&[u8], &[u8], Vec<u8>, Vec<u8>, winnow::error::Error<&[u8]>, _, _>(take(1_usize), count(line_ending, 2))(input)?;
 
-    let (input, (command, headers)) = tuple((
+    let (input, (command, headers)) : (_, (_,Vec<_>)) = tuple((
         delimited(opt(complete(line_ending)), alpha1, line_ending), // command
         terminated(
             many0(parse_header), // header
@@ -121,7 +121,7 @@ pub(crate) fn parse_frame(input: &[u8]) -> IResult<&[u8], Frame> {
     };
 
     let (input, _) = tuple((tag("\x00"), opt(complete(line_ending))))(input)?;
-
+    
     Ok((
         input,
         Frame {
