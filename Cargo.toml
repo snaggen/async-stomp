@@ -13,7 +13,7 @@ edition = "2021"
 
 [dependencies]
 bytes = "1.1.0"
-custom_debug_derive = "0.4.0"
+custom_debug_derive = "0.6.1"
 anyhow = "1.0"
 futures = "0.3"
 tokio = { version = "1", features = ["net"] }
