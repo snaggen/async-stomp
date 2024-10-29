@@ -1,5 +1,7 @@
 # async-stomp
-An async [STOMP](https://stomp.github.io/) client (and maybe eventually, server) for Rust, using the Tokio stack.
+[![crates.io](https://img.shields.io/crates/v/async-stomp.svg)](https://crates.io/crates/async-stomp)
+[![docs.rs](https://docs.rs/async-stomp/badge.svg)](https://docs.rs/async-stomp/latest/async_stomp/)
+An async [STOMP](https://stomp.github.io/) library for Rust, using the Tokio stack.
 
 This is a fork of [tokio-stomp-2](https://github.com/alexkunde/tokio-stomp-2), with the purpose of getting some basic maintenance going.
 
