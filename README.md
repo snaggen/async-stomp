@@ -1,7 +1,7 @@
 # async-stomp
 An async [STOMP](https://stomp.github.io/) client (and maybe eventually, server) for Rust, using the Tokio stack.
 
-This is a fork of async-stomp-2, with the purpose of getting some basic maintenance going.
+This is a fork of [tokio-stomp-2](https://github.com/alexkunde/tokio-stomp-2), with the purpose of getting some basic maintenance going.
 
 ## Examples
 
