@@ -1,13 +1,13 @@
 [package]
-name = "tokio-stomp-2"
-version = "0.3.0"
+name = "async-stomp"
+version = "0.4.0"
 description = "Unofficial successor to Asynchronous streaming STOMP client"
-authors = ["Jens Walter <jens@apimeister.com>, Alexander Kunde <a.kunde@outlook.com>"]
-original-authors = ["Alex Whitney <adwhit@fastmail.com>"]
-repository = "http://github.com/alexkunde/tokio-stomp-2"
-homepage = "http://github.com/alexkunde/tokio-stomp-2"
+authors = ["Mattias Eriksson <snaggen@mayam.com>"]
+original-authors = ["Alex Whitney <adwhit@fastmail.com>, Jens Walter <jens@apimeister.com>, Alexander Kunde <a.kunde@outlook.com>"]
+repository = "https://github.com/snaggen/async-stomp"
+homepage = "https://github.com/snaggen/async-stomp"
 keywords = ["stomp", "tokio", "streaming"]
-license = "MIT"
+license = "EUPL"
 readme = "README.md"
 edition = "2021"
 

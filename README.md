@@ -16,8 +16,8 @@ Sending a message to a queue.
 
 ```rust
 use futures::prelude::*;
-use tokio_stomp_2::client;
-use tokio_stomp_2::ToServer;
+use async_stomp::client;
+use async_stomp::ToServer;
 
 #[tokio::main]
 async fn main() -> Result<(), std::io::Error> {
@@ -41,8 +41,8 @@ Receiving a message from a queue.
 
 ```rust
 use futures::prelude::*;
-use tokio_stomp_2::client;
-use tokio_stomp_2::FromServer;
+use async_stomp::client;
+use async_stomp::FromServer;
 
 #[tokio::main]
 async fn main() -> Result<(), std::io::Error> {

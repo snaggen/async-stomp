@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use futures::prelude::*;
-use tokio_stomp_2::*;
+use async_stomp::*;
 
 // This examples consists of two futures, each of which connects to a local server,
 // and then sends either PING or PONG messages to the server while listening
