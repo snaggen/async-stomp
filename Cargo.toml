@@ -7,7 +7,7 @@ original-authors = ["Alex Whitney <adwhit@fastmail.com>, Jens Walter <jens@apime
 repository = "https://github.com/snaggen/async-stomp"
 homepage = "https://github.com/snaggen/async-stomp"
 keywords = ["stomp", "tokio", "streaming"]
-license = "EUPL"
+license = "EUPL-1.2"
 readme = "README.md"
 edition = "2021"
 
