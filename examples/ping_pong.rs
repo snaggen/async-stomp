@@ -1,7 +1,8 @@
 use std::time::Duration;
 
-use futures::prelude::*;
 use async_stomp::*;
+use client::{Connector, Subscriber};
+use futures::prelude::*;
 
 // This examples consists of two futures, each of which connects to a local server,
 // and then sends either PING or PONG messages to the server while listening
@@ -11,14 +12,19 @@ use async_stomp::*;
 // `docker run -p 61613:61613 rmohr/activemq:latest`
 
 async fn client(listens: &str, sends: &str, msg: &[u8]) -> Result<(), anyhow::Error> {
-    let mut conn = client::connect(
-        "127.0.0.1:61613",
-        "/".to_string(),
-        "guest".to_string().into(),
-        "guest".to_string().into(),
-    )
-    .await?;
-    conn.send(client::subscribe(listens, "myid")).await?;
+    let mut conn = Connector::builder()
+        .server("127.0.0.1:61613")
+        .virtualhost("/")
+        .login("guest".to_string())
+        .passcode("guest".to_string())
+        .connect()
+        .await?;
+
+    let subscribe = Subscriber::builder()
+        .destination(listens)
+        .id("myid")
+        .subscribe();
+    conn.send(subscribe).await?;
 
     loop {
         conn.send(
@@ -33,7 +39,7 @@ async fn client(listens: &str, sends: &str, msg: &[u8]) -> Result<(), anyhow::Er
         .await?;
         let msg = conn.next().await.transpose()?;
         if let Some(FromServer::Message { body, .. }) = msg.as_ref().map(|m| &m.content) {
-            println!("{}", String::from_utf8_lossy(&body.as_ref().unwrap()));
+            println!("{}", String::from_utf8_lossy(body.as_ref().unwrap()));
         } else {
             anyhow::bail!("Unexpected: {:?}", msg)
         }

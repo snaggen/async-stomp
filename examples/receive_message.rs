@@ -1,6 +1,7 @@
-use futures::prelude::*;
-use async_stomp::client;
+use async_stomp::client::Connector;
+use async_stomp::client::Subscriber;
 use async_stomp::FromServer;
+use futures::prelude::*;
 
 // You can start a simple STOMP server with docker:
 // `docker run -p 61613:61613 -p 8161:8161 rmohr/activemq:latest`
@@ -8,18 +9,21 @@ use async_stomp::FromServer;
 
 #[tokio::main]
 async fn main() -> Result<(), std::io::Error> {
-    let mut conn = client::connect(
-        "127.0.0.1:61613",
-        "/".to_string(),
-        "guest".to_string().into(),
-        "guest".to_string().into(),
-    )
-    .await
-    .unwrap();
-
-    conn.send(client::subscribe("queue.test", "custom-subscriber-id"))
+    let mut conn = Connector::builder()
+        .server("127.0.0.1:61613")
+        .virtualhost("/")
+        .login("guest".to_string())
+        .passcode("guest".to_string())
+        .connect()
         .await
         .unwrap();
+
+    let subscribe = Subscriber::builder()
+        .destination("queue.test")
+        .id("custom-subscriber-id")
+        .subscribe();
+
+    conn.send(subscribe).await.unwrap();
 
     while let Some(item) = conn.next().await {
         if let FromServer::Message {

@@ -127,7 +127,9 @@ pub enum AckMode {
 
 impl Message<ToServer> {
     fn to_frame(&self) -> Frame {
-        self.content.to_frame()
+        let mut frame = self.content.to_frame();
+        frame.add_extra_headers(&self.extra_headers);
+        frame
     }
     #[allow(dead_code)]
     fn from_frame(frame: Frame) -> Result<Message<ToServer>> {

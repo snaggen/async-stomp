@@ -79,6 +79,18 @@ impl<'a> Frame<'a> {
         }
         buffer.put_u8(b'\x00');
     }
+
+    pub fn add_extra_headers(&mut self, headers: &'a [(Vec<u8>, Vec<u8>)]) {
+        if !headers.is_empty() {
+            let existing_headers: Vec<&[u8]> = self.headers.iter().map(|(k, _v)| *k).collect();
+            headers
+                .iter()
+                .filter(|f| !existing_headers.contains(&f.0.as_ref()))
+                .for_each(|(k, v)| {
+                    self.headers.push((k.as_ref(), Cow::Borrowed(v.as_ref())));
+                });
+        }
+    }
 }
 
 // Nom definitions

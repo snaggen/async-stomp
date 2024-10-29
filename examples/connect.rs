@@ -1,8 +1,9 @@
 use std::time::Duration;
 
+use async_stomp::*;
+use client::{Connector, Subscriber};
 use futures::future::ok;
 use futures::prelude::*;
-use async_stomp::*;
 
 // The example connects to a local server, then sends the following messages -
 // subscribe to a destination, send a message to the destination, unsubscribe and disconnect
@@ -14,20 +15,24 @@ use async_stomp::*;
 
 #[tokio::main]
 async fn main() -> Result<(), anyhow::Error> {
-    let conn = client::connect(
-        "127.0.0.1:61613",
-        "/".to_string(),
-        "guest".to_string().into(),
-        "guest".to_string().into(),
-    )
-    .await?;
+    let conn = Connector::builder()
+        .server("127.0.0.1:61613")
+        .virtualhost("/")
+        .login("guest".to_string())
+        .passcode("guest".to_string())
+        .connect()
+        .await?;
 
     tokio::time::sleep(Duration::from_millis(200)).await;
 
     let (mut sink, stream) = conn.split();
 
     let fut1 = async move {
-        sink.send(client::subscribe("rusty", "myid")).await?;
+        let subscribe = Subscriber::builder()
+            .destination("rusty")
+            .id("myid")
+            .subscribe();
+        sink.send(subscribe).await?;
         println!("Subscribe sent");
 
         tokio::time::sleep(Duration::from_millis(200)).await;

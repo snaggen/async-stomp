@@ -9,43 +9,66 @@ Sending a message to a queue.
 
 ```rust
 use futures::prelude::*;
-use async_stomp::client;
+use async_stomp::client::Connector;
 use async_stomp::ToServer;
 
 #[tokio::main]
 async fn main() -> Result<(), std::io::Error> {
-  let mut conn = client::connect("127.0.0.1:61613", None, None).await.unwrap();
-  
-  conn.send(
-    ToServer::Send {
+  let mut conn = Connector::builder()
+    .server("127.0.0.1:61613")
+    .virtualhost("/")
+    .login("guest".to_string())
+    .passcode("guest".to_string())
+    .connect()
+    .await
+    .unwrap();
+
+    conn.send(
+      ToServer::Send {
         destination: "queue.test".into(),
         transaction: None,
-        headers: vec!(),
+        headers: None,
         body: Some(b"Hello there rustaceans!".to_vec()),
-    }
-    .into(),
-  )
-  .await.expect("sending message to server");
-  Ok(())
+      }
+      .into(),
+    )
+    .await
+    .expect("sending message to server");
+    Ok(())
 }
 ```
 
 Receiving a message from a queue.
-
 ```rust
 use futures::prelude::*;
-use async_stomp::client;
+use async_stomp::client::Connector;
+use async_stomp::client::Subscriber;
 use async_stomp::FromServer;
 
 #[tokio::main]
 async fn main() -> Result<(), std::io::Error> {
-  let mut conn = client::connect("127.0.0.1:61613", None, None).await.unwrap();
-  conn.send(client::subscribe("queue.test", "custom-subscriber-id")).await.unwrap();
+  let mut conn = Connector::builder()
+    .server("127.0.0.1:61613")
+    .virtualhost("/")
+    .login("guest".to_string())
+    .passcode("guest".to_string())
+    .connect()
+    .await
+    .unwrap();
+
+  let subscribe = Subscriber::builder()
+    .destination("queue.test")
+    .id("custom-subscriber-id")
+    .subscribe();
+
+  conn.send(subscribe)
+    .await
+    .unwrap();
 
   while let Some(item) = conn.next().await {
-    if let FromServer::Message { message_id,body, .. } = item.unwrap().content {
-      println!("{:?}", body);
-      println!("{}", message_id);
+    if let FromServer::Message { message_id, body, .. } = item.unwrap().content {
+        println!("{:?}", body);
+        println!("{}", message_id);
     }
   }
   Ok(())

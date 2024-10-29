@@ -4,6 +4,7 @@ use futures::sink::SinkExt;
 
 use tokio::net::TcpStream;
 use tokio_util::codec::{Decoder, Encoder, Framed};
+use typed_builder::TypedBuilder;
 use winnow::error::ErrMode;
 use winnow::stream::Offset;
 use winnow::Partial;
@@ -14,23 +15,101 @@ use crate::frame;
 use crate::{FromServer, Message, Result, ToServer};
 use anyhow::{anyhow, bail};
 
-/// Connect to a STOMP server via TCP, including the connection handshake.
+/// Create a connection to a STOMP server via TCP, including the connection handshake.
 /// If successful, returns a tuple of a message stream and a sender,
 /// which may be used to receive and send messages respectively.
 ///
 /// `virtualhost` If no specific virtualhost is desired, it is recommended
 /// to set this to the same as the host name that the socket
 /// was established against (i.e, the same as the server address).
-pub async fn connect(
-    server: impl tokio::net::ToSocketAddrs,
-    virtualhost: impl Into<String>,
+///
+/// # Examples
+///
+/// ```rust,no_run
+/// use async_stomp::client::Connector;
+///
+///#[tokio::main]
+/// async fn main() {
+///   let connection = Connector::builder()
+///     .server("stomp.example.com")
+///     .virtualhost("stomp.example.com")
+///     .login("guest".to_string())
+///     .passcode("guest".to_string())
+///     .connect()
+///     .await;
+///}
+/// ```
+#[derive(TypedBuilder)]
+#[builder(build_method(vis="", name=__build))]
+pub struct Connector<S: tokio::net::ToSocketAddrs, V: Into<String>> {
+    /// The address to the stomp server
+    server: S,
+    /// Virtualhost, if no specific virtualhost is desired, it is recommended
+    /// to set this to the same as the host name that the socket
+    virtualhost: V,
+    /// Username to use for optional authentication to the server
+    #[builder(default, setter(strip_option))]
     login: Option<String>,
+    /// Passcode to use for optional authentication to the server
+    #[builder(default, setter(strip_option))]
     passcode: Option<String>,
-) -> Result<ClientTransport> {
-    let tcp = TcpStream::connect(server).await?;
-    let mut transport = ClientCodec.framed(tcp);
-    client_handshake(&mut transport, virtualhost.into(), login, passcode).await?;
-    Ok(transport)
+    /// Custom headers to be sent to the server
+    #[builder(default)]
+    headers: Vec<(String, String)>,
+}
+
+#[allow(non_camel_case_types)]
+impl<
+        S: tokio::net::ToSocketAddrs,
+        V: Into<String>,
+        __login: ::typed_builder::Optional<Option<String>>,
+        __passcode: ::typed_builder::Optional<Option<String>>,
+        __headers: ::typed_builder::Optional<Vec<(String, String)>>,
+    > ConnectorBuilder<S, V, ((S,), (V,), __login, __passcode, __headers)>
+{
+    pub async fn connect(self) -> Result<ClientTransport> {
+        let connector = self.__build();
+        connector.connect().await
+    }
+
+    pub fn msg(self) -> Message<ToServer> {
+        let connector = self.__build();
+        connector.msg()
+    }
+}
+
+impl<S: tokio::net::ToSocketAddrs, V: Into<String>> Connector<S, V> {
+    pub async fn connect(self) -> Result<ClientTransport> {
+        let tcp = TcpStream::connect(self.server).await?;
+        let mut transport = ClientCodec.framed(tcp);
+        client_handshake(
+            &mut transport,
+            self.virtualhost.into(),
+            self.login,
+            self.passcode,
+            self.headers,
+        )
+        .await?;
+        Ok(transport)
+    }
+
+    pub fn msg(self) -> Message<ToServer> {
+        let extra_headers = self
+            .headers
+            .into_iter()
+            .map(|(k, v)| (k.as_bytes().to_vec(), v.as_bytes().to_vec()))
+            .collect();
+        Message {
+            content: ToServer::Connect {
+                accept_version: "1.2".into(),
+                host: self.virtualhost.into(),
+                login: self.login,
+                passcode: self.passcode,
+                heartbeat: None,
+            },
+            extra_headers,
+        }
+    }
 }
 
 async fn client_handshake(
@@ -38,7 +117,12 @@ async fn client_handshake(
     virtualhost: String,
     login: Option<String>,
     passcode: Option<String>,
+    headers: Vec<(String, String)>,
 ) -> Result<()> {
+    let extra_headers = headers
+        .iter()
+        .map(|(k, v)| (k.as_bytes().to_vec(), v.as_bytes().to_vec()))
+        .collect();
     let connect = Message {
         content: ToServer::Connect {
             accept_version: "1.2".into(),
@@ -47,7 +131,7 @@ async fn client_handshake(
             passcode,
             heartbeat: None,
         },
-        extra_headers: vec![],
+        extra_headers,
     };
     // Send the message
     transport.send(connect).await?;
@@ -60,14 +144,73 @@ async fn client_handshake(
     }
 }
 
-/// Convenience function to build a Subscribe message
-pub fn subscribe(dest: impl Into<String>, id: impl Into<String>) -> Message<ToServer> {
-    ToServer::Subscribe {
-        destination: dest.into(),
-        id: id.into(),
-        ack: None,
+/// Builder to create a Subscribe message with optional custom headers
+///
+/// # Examples
+///
+/// ```rust,no_run
+/// use futures::prelude::*;
+/// use async_stomp::client::Connector;
+/// use async_stomp::client::Subscriber;
+///
+///
+/// #[tokio::main]
+/// async fn main() -> Result<(), anyhow::Error> {
+///   let mut connection = Connector::builder()
+///     .server("stomp.example.com")
+///     .virtualhost("stomp.example.com")
+///     .login("guest".to_string())
+///     .passcode("guest".to_string())
+///     .headers(vec![("client-id".to_string(), "ClientTest".to_string())])
+///     .connect()
+///     .await.expect("Client connection");
+///   
+///   let subscribe_msg = Subscriber::builder()
+///     .destination("queue.test")
+///     .id("custom-subscriber-id")
+///     .subscribe();
+///
+///   connection.send(subscribe_msg).await?;
+///   Ok(())
+/// }
+/// ```
+#[derive(TypedBuilder)]
+#[builder(build_method(vis="", name=__build))]
+pub struct Subscriber<S: Into<String>, I: Into<String>> {
+    destination: S,
+    id: I,
+    #[builder(default)]
+    headers: Vec<(String, String)>,
+}
+
+#[allow(non_camel_case_types)]
+impl<
+        S: Into<String>,
+        I: Into<String>,
+        __headers: ::typed_builder::Optional<Vec<(String, String)>>,
+    > SubscriberBuilder<S, I, ((S,), (I,), __headers)>
+{
+    pub fn subscribe(self) -> Message<ToServer> {
+        let subscriber = self.__build();
+        subscriber.subscribe()
     }
-    .into()
+}
+
+impl<S: Into<String>, I: Into<String>> Subscriber<S, I> {
+    pub fn subscribe(self) -> Message<ToServer> {
+        let mut msg: Message<ToServer> = ToServer::Subscribe {
+            destination: self.destination.into(),
+            id: self.id.into(),
+            ack: None,
+        }
+        .into();
+        msg.extra_headers = self
+            .headers
+            .iter()
+            .map(|(k, v)| (k.as_bytes().to_vec(), v.as_bytes().to_vec()))
+            .collect();
+        msg
+    }
 }
 
 pub struct ClientCodec;
@@ -106,23 +249,89 @@ impl Encoder<Message<ToServer>> for ClientCodec {
 mod tests {
     use std::time::Duration;
 
+    use bytes::BytesMut;
     use futures::{future::ok, SinkExt, StreamExt, TryStreamExt};
 
-    use crate::{client, FromServer, ToServer};
+    use crate::{
+        client::{Connector, Subscriber},
+        FromServer, Message, ToServer,
+    };
+
+    #[test]
+    fn subscription_message() {
+        let headers = vec![(
+            "activemq.subscriptionName".to_string(),
+            "ClientTest".to_string(),
+        )];
+        let subscribe_msg = Subscriber::builder()
+            .destination("queue.test")
+            .id("custom-subscriber-id")
+            .headers(headers.clone())
+            .subscribe();
+        let mut expected: Message<ToServer> = ToServer::Subscribe {
+            destination: "queue.test".to_string(),
+            id: "custom-subscriber-id".to_string(),
+            ack: None,
+        }
+        .into();
+        expected.extra_headers = headers
+            .into_iter()
+            .map(|(k, v)| (k.as_bytes().to_vec(), v.as_bytes().to_vec()))
+            .collect();
+
+        let mut expected_buffer = BytesMut::new();
+        expected.to_frame().serialize(&mut expected_buffer);
+        let mut actual_buffer = BytesMut::new();
+        subscribe_msg.to_frame().serialize(&mut actual_buffer);
+
+        assert_eq!(expected_buffer, actual_buffer);
+    }
+
+    #[test]
+    fn connection_message() {
+        let headers = vec![("client-id".to_string(), "ClientTest".to_string())];
+        let connect_msg = Connector::builder()
+            .server("stomp.example.com")
+            .virtualhost("virtual.stomp.example.com")
+            .login("guest_login".to_string())
+            .passcode("guest_passcode".to_string())
+            .headers(headers.clone())
+            .msg();
+
+        let mut expected: Message<ToServer> = ToServer::Connect {
+            accept_version: "1.2".into(),
+            host: "virtual.stomp.example.com".into(),
+            login: Some("guest_login".to_string()),
+            passcode: Some("guest_passcode".to_string()),
+            heartbeat: None,
+        }
+        .into();
+        expected.extra_headers = headers
+            .into_iter()
+            .map(|(k, v)| (k.as_bytes().to_vec(), v.as_bytes().to_vec()))
+            .collect();
+
+        let mut expected_buffer = BytesMut::new();
+        expected.to_frame().serialize(&mut expected_buffer);
+        let mut actual_buffer = BytesMut::new();
+        connect_msg.to_frame().serialize(&mut actual_buffer);
+
+        assert_eq!(expected_buffer, actual_buffer);
+    }
 
     // Test to send a message
     #[tokio::test]
     #[ignore]
     async fn test_session() {
-        let mut conn = crate::client::connect(
-            "localhost:61613",
-            "/",
-            //None,None
-            Some("artemis".to_string()),
-            Some("artemis".to_string()),
-        )
-        .await
-        .expect("Default connection to localhost");
+        let mut conn = Connector::builder()
+            .server("localhost:61613")
+            .virtualhost("/")
+            .login("artemis".to_string())
+            .passcode("artemis".to_string())
+            .connect()
+            .await
+            .expect("Default connection to localhost");
+
         let msg = crate::Message {
             content: ToServer::Send {
                 destination: "/test/a".to_string(),
@@ -149,16 +358,20 @@ mod tests {
     #[tokio::test]
     #[ignore]
     async fn test_subscribe() {
-        let sub_msg = crate::client::subscribe("/test/a", "tjo");
-        let mut conn = crate::client::connect(
-            "localhost:61613",
-            "/",
-            //None,None
-            Some("artemis".to_string()),
-            Some("artemis".to_string()),
-        )
-        .await
-        .expect("Default connection to localhost");
+        let sub_msg = Subscriber::builder()
+            .destination("/test/a")
+            .id("tjo")
+            .subscribe();
+
+        let mut conn = Connector::builder()
+            .server("localhost:61613")
+            .virtualhost("/")
+            .login("artemis".to_string())
+            .passcode("artemis".to_string())
+            .connect()
+            .await
+            .expect("Default connection to localhost");
+
         conn.send(sub_msg).await.expect("Send subscribe");
         let (_sink, stream) = conn.split();
 
@@ -184,21 +397,26 @@ mod tests {
     #[tokio::test]
     #[ignore]
     async fn test_send_subscribe() {
-        let conn = client::connect(
-            "127.0.0.1:61613",
-            "/".to_string(),
-            "artemis".to_string().into(),
-            "artemis".to_string().into(),
-        )
-        .await
-        .expect("Connect");
+        let conn = Connector::builder()
+            .server("localhost:61613")
+            .virtualhost("/")
+            .login("artemis".to_string())
+            .passcode("artemis".to_string())
+            .connect()
+            .await
+            .expect("Default connection to localhost");
 
         tokio::time::sleep(Duration::from_millis(200)).await;
 
         let (mut sink, stream) = conn.split();
 
         let fut1 = async move {
-            sink.send(client::subscribe("rusty", "myid")).await?;
+            let subscribe = Subscriber::builder()
+                .destination("rusty")
+                .id("myid")
+                .subscribe();
+
+            sink.send(subscribe).await?;
             println!("Subscribe sent");
 
             tokio::time::sleep(Duration::from_millis(200)).await;
@@ -241,7 +459,7 @@ mod tests {
                     String::from_utf8_lossy(&body.unwrap())
                 );
             } else {
-                //    println!("{:?}", item);
+                println!("{:?}", item);
             }
             ok(())
         });
