@@ -80,4 +80,4 @@ async fn main() -> Result<(), std::io::Error> {
 
 For full examples, see the examples directory.
 
-License: [EUPL](LICENSE)
+License: [EUPL](LICENSE.EUPL)
