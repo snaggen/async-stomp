@@ -1,6 +1,7 @@
 # async-stomp
 [![crates.io](https://img.shields.io/crates/v/async-stomp.svg)](https://crates.io/crates/async-stomp)
 [![docs.rs](https://docs.rs/async-stomp/badge.svg)](https://docs.rs/async-stomp/latest/async_stomp/)
+[![codecov](https://codecov.io/github/snaggen/async-stomp/graph/badge.svg?token=HEY5300T6X)](https://codecov.io/github/snaggen/async-stomp)
 
 An async [STOMP](https://stomp.github.io/) library for Rust, using the Tokio stack.
 
