@@ -5,7 +5,7 @@ use winnow::{
     ascii::{alpha1, line_ending, till_line_ending},
     combinator::{delimited, opt, repeat, separated_pair, terminated, trace},
     token::{literal, take, take_till, take_until},
-    PResult, Parser, Partial,
+    ModalResult, Parser, Partial,
 };
 
 use std::borrow::Cow;
@@ -113,7 +113,7 @@ fn is_empty_slice(s: &[u8]) -> Option<&[u8]> {
     }
 }
 
-pub fn parse_frame<'a>(input: &mut Partial<&'a [u8]>) -> PResult<Frame<'a>> {
+pub fn parse_frame<'a>(input: &mut Partial<&'a [u8]>) -> ModalResult<Frame<'a>> {
     let (command, headers): (_, Vec<_>) = trace(
         "parse_frame",
         (
@@ -141,7 +141,7 @@ pub fn parse_frame<'a>(input: &mut Partial<&'a [u8]>) -> PResult<Frame<'a>> {
     })
 }
 
-pub fn parse_header<'a>(input: &mut Partial<&'a [u8]>) -> PResult<Header<'a>> {
+pub fn parse_header<'a>(input: &mut Partial<&'a [u8]>) -> ModalResult<Header<'a>> {
     trace(
         "parse_header",
         separated_pair(
