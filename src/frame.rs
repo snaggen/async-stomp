@@ -4,6 +4,7 @@ use bytes::{BufMut, BytesMut};
 use winnow::{
     ascii::{alpha1, line_ending, till_line_ending},
     combinator::{delimited, opt, repeat, separated_pair, terminated, trace},
+    error::StrContext::Label,
     token::{literal, take, take_till, take_until},
     ModalResult, Parser, Partial,
 };
@@ -124,16 +125,23 @@ pub fn parse_frame<'a>(input: &mut Partial<&'a [u8]>) -> ModalResult<Frame<'a>> 
             ),
         ),
     )
+    .context(Label("Command/Headers"))
     .parse_next(input)?;
 
     let body: Option<&[u8]> = match get_content_length(&headers) {
         None => take_until(0.., "\x00")
             .map(is_empty_slice)
+            .context(Label("Body (null terminated)"))
             .parse_next(input)?,
-        Some(length) => take(length).map(Some).parse_next(input)?,
+        Some(length) => take(length)
+            .map(Some)
+            .context(Label("Body (fixed size)"))
+            .parse_next(input)?,
     };
 
-    (literal("\x00"), opt(line_ending.complete_err())).parse_next(input)?;
+    (literal("\x00"), opt(line_ending.complete_err()))
+        .context(Label("NullTermination/LineEnding"))
+        .parse_next(input)?;
     Ok(Frame {
         command,
         headers,
@@ -148,9 +156,9 @@ pub fn parse_header<'a>(input: &mut Partial<&'a [u8]>) -> ModalResult<Header<'a>
             take_till(1.., [':', '\r', '\n']),
             literal(":"),
             terminated(till_line_ending, line_ending).map(Cow::Borrowed),
-        )
-        .complete_err(),
+        ),
     )
+    .context(Label("Header"))
     .parse_next(input)
 }
 
