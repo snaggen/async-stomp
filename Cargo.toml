@@ -1,6 +1,6 @@
 [package]
 name = "async-stomp"
-version = "0.5.0"
+version = "0.5.1"
 description = "An asynchronous streaming STOMP client"
 authors = ["Mattias Eriksson <snaggen@mayam.com>"]
 original-authors = ["Alex Whitney <adwhit@fastmail.com>, Jens Walter <jens@apimeister.com>, Alexander Kunde <a.kunde@outlook.com>"]
