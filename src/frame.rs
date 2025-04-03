@@ -1,6 +1,7 @@
+use crate::{AckMode, FromServer, Message, Result, ToServer};
 use anyhow::{anyhow, bail};
 use bytes::{BufMut, BytesMut};
-
+use std::borrow::Cow;
 use winnow::{
     ascii::{alpha1, line_ending, till_line_ending},
     combinator::{delimited, opt, repeat, separated_pair, terminated, trace},
@@ -9,27 +10,41 @@ use winnow::{
     ModalResult, Parser, Partial,
 };
 
-use std::borrow::Cow;
-
-use crate::{AckMode, FromServer, Message, Result, ToServer};
+/// Type definitions for working with headers
+/// HeaderTuple represents a header key with an optional value
 type HeaderTuple<'a> = (&'a [u8], Option<Cow<'a, [u8]>>);
+/// Header represents a header key with a mandatory value
 type Header<'a> = (&'a [u8], Cow<'a, [u8]>);
 
+/// Low-level representation of a STOMP protocol frame
+///
+/// A Frame is the low-level representation of a STOMP message as it appears
+/// on the wire. It consists of a command, headers, and an optional body.
+/// This is generally used internally and converted to/from the higher-level
+/// Message<T> types.
 #[derive(Debug)]
 pub(crate) struct Frame<'a> {
+    /// The STOMP command (e.g., "CONNECT", "SEND", "MESSAGE")
     command: &'a [u8],
+    /// Headers as key-value pairs
     // TODO use ArrayVec to keep headers on the stack
     // (makes this object zero-allocation)
     headers: Vec<Header<'a>>,
+    /// Optional message body
     body: Option<&'a [u8]>,
 }
 
 impl<'a> Frame<'a> {
+    /// Create a new Frame with the given command, headers, and body
+    ///
+    /// This function constructs a new Frame from its component parts.
+    /// Headers with None values will be filtered out.
     pub(crate) fn new(
         command: &'a [u8],
         headers: &[HeaderTuple<'a>],
         body: Option<&'a [u8]>,
     ) -> Frame<'a> {
+        // Filter out headers with None values and convert to the required format
         let headers = headers
             .iter()
             // filter out headers with None value
@@ -42,16 +57,28 @@ impl<'a> Frame<'a> {
         }
     }
 
+    /// Serialize this frame into a byte buffer
+    ///
+    /// This method writes the frame in STOMP wire format to the provided BytesMut buffer.
+    /// The format is:
+    /// - Command followed by newline
+    /// - Headers (key:value) each followed by newline
+    /// - Empty line (newline)
+    /// - Body (if present)
+    /// - Null byte terminator
     pub(crate) fn serialize(&self, buffer: &mut BytesMut) {
+        /// Helper function to write bytes with proper escaping of special characters
         fn write_escaped(b: u8, buffer: &mut BytesMut) {
             match b {
-                b'\r' => buffer.put_slice(b"\\r"),
-                b'\n' => buffer.put_slice(b"\\n"),
-                b':' => buffer.put_slice(b"\\c"),
-                b'\\' => buffer.put_slice(b"\\\\"),
-                b => buffer.put_u8(b),
+                b'\r' => buffer.put_slice(b"\\r"),  // Carriage return
+                b'\n' => buffer.put_slice(b"\\n"),  // Line feed
+                b':' => buffer.put_slice(b"\\c"),   // Colon
+                b'\\' => buffer.put_slice(b"\\\\"), // Backslash
+                b => buffer.put_u8(b),              // Regular character
             }
         }
+
+        // Calculate required capacity to avoid reallocations
         let requires = self.command.len()
             + self.body.map(|b| b.len() + 20).unwrap_or(0)
             + self
@@ -59,31 +86,53 @@ impl<'a> Frame<'a> {
                 .iter()
                 .fold(0, |acc, (k, v)| acc + k.len() + v.len())
             + 30;
+
+        // Ensure buffer has enough space
         if buffer.remaining_mut() < requires {
             buffer.reserve(requires);
         }
+
+        // Write command
         buffer.put_slice(self.command);
         buffer.put_u8(b'\n');
+
+        // Write headers
         self.headers.iter().for_each(|&(key, ref val)| {
+            // Write key with proper escaping
             for byte in key {
                 write_escaped(*byte, buffer);
             }
             buffer.put_u8(b':');
+
+            // Write value with proper escaping
             for byte in val.iter() {
                 write_escaped(*byte, buffer);
             }
             buffer.put_u8(b'\n');
         });
+
+        // Empty line separating headers from body
         buffer.put_u8(b'\n');
+
+        // Write body if present
         if let Some(body) = self.body {
             buffer.put_slice(body);
         }
+
+        // Null byte terminator
         buffer.put_u8(b'\x00');
     }
 
+    /// Add extra headers to this frame if they don't already exist
+    ///
+    /// This method adds headers from the provided collection to the frame,
+    /// but only if a header with the same key doesn't already exist.
     pub fn add_extra_headers(&mut self, headers: &'a [(Vec<u8>, Vec<u8>)]) {
         if !headers.is_empty() {
+            // Create a set of existing header keys for efficient lookup
             let existing_headers: Vec<&[u8]> = self.headers.iter().map(|(k, _v)| *k).collect();
+
+            // Add headers that don't already exist
             headers
                 .iter()
                 .filter(|f| !existing_headers.contains(&f.0.as_ref()))
@@ -94,7 +143,12 @@ impl<'a> Frame<'a> {
     }
 }
 
-// Nom definitions
+// Parsing functions using the winnow crate
+
+/// Extract the content-length value from headers if present
+///
+/// This helper function looks for a content-length header and parses its value
+/// as a u32 if found.
 fn get_content_length(headers: &[(&[u8], Cow<[u8]>)]) -> Option<u32> {
     for h in headers {
         if h.0 == b"content-length" {
@@ -106,6 +160,9 @@ fn get_content_length(headers: &[(&[u8], Cow<[u8]>)]) -> Option<u32> {
     None
 }
 
+/// Convert an empty slice to None, or Some(slice) if not empty
+///
+/// This helper function is used during parsing to convert empty body slices to None.
 fn is_empty_slice(s: &[u8]) -> Option<&[u8]> {
     if s.is_empty() {
         None
@@ -114,7 +171,14 @@ fn is_empty_slice(s: &[u8]) -> Option<&[u8]> {
     }
 }
 
+/// Parse a complete STOMP frame from a byte buffer
+///
+/// This function attempts to parse a complete STOMP frame from the input.
+/// If successful, it returns the parsed Frame.
+/// If the input doesn't contain a complete frame, it returns Incomplete.
+/// If the input contains invalid data, it returns an error.
 pub fn parse_frame<'a>(input: &mut Partial<&'a [u8]>) -> ModalResult<Frame<'a>> {
+    // Parse the command and headers
     let (command, headers): (_, Vec<_>) = trace(
         "parse_frame",
         (
@@ -128,6 +192,7 @@ pub fn parse_frame<'a>(input: &mut Partial<&'a [u8]>) -> ModalResult<Frame<'a>> 
     .context(Label("Command/Headers"))
     .parse_next(input)?;
 
+    // Parse the body according to the content-length header if present
     let body: Option<&[u8]> = match get_content_length(&headers) {
         None => take_until(0.., "\x00")
             .map(is_empty_slice)
@@ -139,9 +204,11 @@ pub fn parse_frame<'a>(input: &mut Partial<&'a [u8]>) -> ModalResult<Frame<'a>> 
             .parse_next(input)?,
     };
 
+    // Parse the frame terminator
     (literal("\x00"), opt(line_ending.complete_err()))
         .context(Label("NullTermination/LineEnding"))
         .parse_next(input)?;
+
     Ok(Frame {
         command,
         headers,
@@ -149,6 +216,10 @@ pub fn parse_frame<'a>(input: &mut Partial<&'a [u8]>) -> ModalResult<Frame<'a>> 
     })
 }
 
+/// Parse a single STOMP header from a byte buffer
+///
+/// This function parses a single header in the format "key:value\n".
+/// It returns the parsed header as a (key, value) tuple.
 pub fn parse_header<'a>(input: &mut Partial<&'a [u8]>) -> ModalResult<Header<'a>> {
     trace(
         "parse_header",
@@ -162,6 +233,10 @@ pub fn parse_header<'a>(input: &mut Partial<&'a [u8]>) -> ModalResult<Header<'a>
     .parse_next(input)
 }
 
+/// Fetch a header value by key from a collection of headers
+///
+/// This helper function looks up a header by key and returns its value
+/// as a String if found, or None if not found.
 fn fetch_header<'a>(headers: &'a [(&'a [u8], Cow<'a, [u8]>)], key: &'a str) -> Option<String> {
     let kk = key.as_bytes();
     for &(k, ref v) in headers {
@@ -172,6 +247,10 @@ fn fetch_header<'a>(headers: &'a [(&'a [u8], Cow<'a, [u8]>)], key: &'a str) -> O
     None
 }
 
+/// Convert all headers to a collection of (String, String) pairs
+///
+/// This helper function converts raw binary headers to String pairs,
+/// which is more convenient for higher-level message types.
 fn all_headers<'a>(headers: &'a [(&'a [u8], Cow<'a, [u8]>)]) -> Vec<(String, String)> {
     let mut res = Vec::new();
     for &(k, ref v) in headers {
@@ -184,6 +263,10 @@ fn all_headers<'a>(headers: &'a [(&'a [u8], Cow<'a, [u8]>)]) -> Vec<(String, Str
     res
 }
 
+/// Extract optional headers that aren't in the expected_keys list
+///
+/// This helper function extracts headers that aren't part of the required
+/// headers for a specific message type, and returns them as a Vec of String pairs.
 fn optional_headers<'a>(
     headers: &'a [(&'a [u8], Cow<'a, [u8]>)],
     expected_keys: &[&[u8]],
@@ -205,11 +288,19 @@ fn optional_headers<'a>(
     }
 }
 
+/// Fetch a required header value by key from a collection of headers
+///
+/// This function looks up a header by key and returns its value as a String.
+/// If the header is not found, it returns an error.
 fn expect_header<'a>(headers: &'a [(&'a [u8], Cow<'a, [u8]>)], key: &'a str) -> Result<String> {
     fetch_header(headers, key).ok_or_else(|| anyhow!("Expected header '{}' missing", key))
 }
 
 impl<'a> Frame<'a> {
+    /// Convert this frame to a Message<ToServer>
+    ///
+    /// This method interprets the frame as a client-to-server message
+    /// and converts it to the appropriate ToServer enum variant.
     #[allow(dead_code)]
     pub(crate) fn to_client_msg(&'a self) -> Result<Message<ToServer>> {
         use self::expect_header as eh;
@@ -217,6 +308,8 @@ impl<'a> Frame<'a> {
         use ToServer::*;
         let h = &self.headers;
         let expect_keys: &[&[u8]];
+
+        // Determine the message type based on the command and create the appropriate content
         let content = match self.command {
             b"STOMP" | b"CONNECT" | b"stomp" | b"connect" => {
                 expect_keys = &[
@@ -306,6 +399,8 @@ impl<'a> Frame<'a> {
             }
             other => bail!("Frame not recognized: {:?}", String::from_utf8_lossy(other)),
         };
+
+        // Collect any extra headers not required by the specific message type
         let extra_headers = h
             .iter()
             .filter_map(|&(k, ref v)| {
@@ -316,18 +411,25 @@ impl<'a> Frame<'a> {
                 }
             })
             .collect();
+
         Ok(Message {
             content,
             extra_headers,
         })
     }
 
+    /// Convert this frame to a Message<FromServer>
+    ///
+    /// This method interprets the frame as a server-to-client message
+    /// and converts it to the appropriate FromServer enum variant.
     pub(crate) fn to_server_msg(&'a self) -> Result<Message<FromServer>> {
         use self::expect_header as eh;
         use self::fetch_header as fh;
         use FromServer::{Connected, Error, Message as Msg, Receipt};
         let h = &self.headers;
         let expect_keys: &[&[u8]];
+
+        // Determine the message type based on the command and create the appropriate content
         let content = match self.command {
             b"CONNECTED" | b"connected" => {
                 expect_keys = &[b"version", b"session", b"server", b"heart-beat"];
@@ -363,6 +465,8 @@ impl<'a> Frame<'a> {
             }
             other => bail!("Frame not recognized: {:?}", String::from_utf8_lossy(other)),
         };
+
+        // Collect any extra headers not required by the specific message type
         let extra_headers = h
             .iter()
             .filter_map(|&(k, ref v)| {
@@ -373,6 +477,7 @@ impl<'a> Frame<'a> {
                 }
             })
             .collect();
+
         Ok(Message {
             content,
             extra_headers,
@@ -380,10 +485,19 @@ impl<'a> Frame<'a> {
     }
 }
 
+/// Convert an Option<String> to Option<Cow<[u8]>>
+///
+/// This helper function is used when creating frames to convert String
+/// header values to the binary format needed by the Frame struct.
 fn opt_str_to_bytes(s: &Option<String>) -> Option<Cow<'_, [u8]>> {
     s.as_ref().map(|v| Cow::Borrowed(v.as_bytes()))
 }
 
+/// Parse a heartbeat header value into a (u32, u32) tuple
+///
+/// This helper function parses the heart-beat header value which is
+/// in the format "cx,cy" where cx is the client's heartbeat interval
+/// and cy is the server's heartbeat interval.
 fn parse_heartbeat(hb: &str) -> Result<(u32, u32)> {
     let mut split = hb.splitn(2, ',');
     let left = split.next().ok_or_else(|| anyhow!("Bad heartbeat"))?;
@@ -392,10 +506,17 @@ fn parse_heartbeat(hb: &str) -> Result<(u32, u32)> {
 }
 
 impl ToServer {
+    /// Convert this ToServer enum to a Frame
+    ///
+    /// This method creates a Frame representation of the message
+    /// that can be serialized and sent over the wire.
     pub(crate) fn to_frame(&self) -> Frame {
         use self::opt_str_to_bytes as sb;
         use Cow::*;
         use ToServer::*;
+
+        // Create a Frame with the appropriate command, headers, and body
+        // based on the ToServer variant
         match *self {
             Connect {
                 ref accept_version,
@@ -451,15 +572,19 @@ impl ToServer {
                 ref headers,
                 ref body,
             } => {
+                // Create the base headers for the SEND frame
                 let mut hdr: Vec<HeaderTuple> = vec![
                     (b"destination", Some(Borrowed(destination.as_bytes()))),
                     (b"id", sb(transaction)),
                 ];
+
+                // Add any custom headers
                 if headers.is_some() {
                     for (key, val) in headers.as_ref().unwrap() {
                         hdr.push((key.as_bytes(), Some(Borrowed(val.as_bytes()))));
                     }
                 }
+
                 Frame::new(b"SEND", &hdr, body.as_ref().map(|v| v.as_ref()))
             }
             Ack {
