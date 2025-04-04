@@ -240,6 +240,7 @@ pub enum ToServer {
         /// Optional receipt request
         receipt: Option<String>,
     },
+    Eol,
 }
 
 /// Acknowledgment modes for STOMP subscriptions

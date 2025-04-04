@@ -1,14 +1,19 @@
 use crate::frame;
 use crate::{FromServer, Message, Result, ToServer};
 use anyhow::{anyhow, bail};
-use bytes::{Buf, BytesMut};
+use bytes::{Buf, BufMut, BytesMut};
 use futures::prelude::*;
 use futures::sink::SinkExt;
+use std::cmp::max;
 use std::fmt;
+use std::ops::{Deref, DerefMut};
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
+use std::time::Duration;
 use tokio::net::TcpStream;
+use tokio::sync::{mpsc, Mutex};
+use tokio::time::timeout;
 use tokio_rustls::client::TlsStream;
 use tokio_rustls::rustls::{self, ClientConfig, RootCertStore};
 use tokio_rustls::TlsConnector;
@@ -22,7 +27,61 @@ use winnow::Partial;
 ///
 /// This is a `Framed` instance that handles encoding and decoding of STOMP frames
 /// over either a plain TCP connection or a TLS connection.
-pub type ClientTransport = Framed<TransportStream, ClientCodec>;
+///
+/// This type is Arc<Mutex> wrapped, due to thread safety reasons.
+pub type ClientTransport = Arc<Mutex<Transport>>;
+
+pub struct Transport {
+    inner: Framed<TransportStream, ClientCodec>,
+    control: Option<mpsc::Sender<bool>>,
+}
+
+impl Transport {
+    /// Send `Message<ToServer>` to the server.
+    /// This will also reset the heartbeat timer, if heartbeats are used.
+    pub async fn send(&mut self, msg: Message<ToServer>) -> std::result::Result<(), anyhow::Error> {
+        let result = self.inner.send(msg).await;
+        if let Some(ctrl) = self.control.as_ref() {
+            //Reset heartbeat timeout
+            let _ = ctrl.send(false).await;
+        }
+        result
+    }
+    /// Send `Message<ToServer>` to the server but will not affect the heartbeat timer
+    /// This is primarily used by the heartbeat timer.
+    async fn send_no_reset(
+        &mut self,
+        msg: Message<ToServer>,
+    ) -> std::result::Result<(), anyhow::Error> {
+        self.inner.send(msg).await
+    }
+}
+
+impl Deref for Transport {
+    type Target = Framed<TransportStream, ClientCodec>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.inner
+    }
+}
+
+impl DerefMut for Transport {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.inner
+    }
+}
+
+/// Custom drop implementation, to send a shutdown notice to
+/// the heartbeat timer if that is used.
+impl Drop for Transport {
+    fn drop(&mut self) {
+        if let Some(ctrl) = self.control.clone() {
+            tokio::task::spawn(async move {
+                let _ = ctrl.send(true).await;
+            });
+        }
+    }
+}
 
 /// Enum representing the transport stream, which can be either a plain TCP connection or a TLS connection
 ///
@@ -135,6 +194,9 @@ pub struct Connector<S: tokio::net::ToSocketAddrs + Clone, V: Into<String> + Clo
     /// Optional server name to verify in TLS certificate (defaults to hostname from server if not specified)
     #[builder(default, setter(strip_option))]
     tls_server_name: Option<String>,
+    /// Optional heartbeat interval in milliseconds
+    #[builder(default, setter(strip_option))]
+    heartbeat_interval: Option<u32>,
 }
 
 /// Implementation of the builder connect method to allow the builder to directly connect
@@ -147,6 +209,7 @@ impl<
         __headers: ::typed_builder::Optional<Vec<(String, String)>>,
         __use_tls: ::typed_builder::Optional<bool>,
         __tls_server_name: ::typed_builder::Optional<Option<String>>,
+        __heartbeat_interval: ::typed_builder::Optional<Option<u32>>,
     >
     ConnectorBuilder<
         S,
@@ -159,6 +222,7 @@ impl<
             __headers,
             __use_tls,
             __tls_server_name,
+            __heartbeat_interval,
         ),
     >
 {
@@ -251,19 +315,24 @@ impl<S: tokio::net::ToSocketAddrs + Clone, V: Into<String> + Clone> Connector<S,
         };
 
         // Create a framed transport with the STOMP codec
-        let mut transport = ClientCodec.framed(transport_stream);
+        let transport = ClientCodec.framed(transport_stream);
+        let mut client = Arc::new(Mutex::new(Transport {
+            inner: transport,
+            control: None,
+        }));
 
         // Perform the STOMP protocol handshake
         client_handshake(
-            &mut transport,
+            &mut client,
             self.virtualhost.into(),
             self.login,
             self.passcode,
             self.headers,
+            self.heartbeat_interval,
         )
         .await?;
 
-        Ok(transport)
+        Ok(client)
     }
 
     /// Create a CONNECT message without actually connecting
@@ -298,11 +367,12 @@ impl<S: tokio::net::ToSocketAddrs + Clone, V: Into<String> + Clone> Connector<S,
 /// a CONNECTED response. If the server responds with anything else,
 /// the handshake is considered failed.
 async fn client_handshake(
-    transport: &mut ClientTransport,
+    client: &mut ClientTransport,
     virtualhost: String,
     login: Option<String>,
     passcode: Option<String>,
     headers: Vec<(String, String)>,
+    requested_heartbeat: Option<u32>,
 ) -> Result<()> {
     // Convert custom headers to the binary format expected by the protocol
     let extra_headers = headers
@@ -310,6 +380,7 @@ async fn client_handshake(
         .map(|(k, v)| (k.as_bytes().to_vec(), v.as_bytes().to_vec()))
         .collect();
 
+    let heartbeat = requested_heartbeat.map(|h| (h, 0_u32));
     // Create the CONNECT message
     let connect = Message {
         content: ToServer::Connect {
@@ -317,19 +388,74 @@ async fn client_handshake(
             host: virtualhost,
             login,
             passcode,
-            heartbeat: None,
+            heartbeat,
         },
         extra_headers,
     };
 
-    // Send the message to the server
-    transport.send(connect).await?;
+    let msg;
+    {
+        let mut transport = client.lock().await;
+        // Send the message to the server
+        transport.send(connect).await?;
 
-    // Receive and process the server's reply
-    let msg = transport.next().await.transpose()?;
+        // Receive and process the server's reply
+        msg = transport.next().await.transpose()?;
+    }
 
     // Check if the reply is a CONNECTED frame
-    if let Some(FromServer::Connected { .. }) = msg.as_ref().map(|m| &m.content) {
+    if let Some(FromServer::Connected { heartbeat: hb, .. }) = msg.as_ref().map(|m| &m.content) {
+        let server_heartbeat = hb
+            .as_ref()
+            .and_then(|s| s.split_once(","))
+            .map(|(_sx, sy)| sy.trim())
+            .and_then(|s| s.parse::<u32>().ok())
+            .unwrap_or(0);
+
+        let requested_heartbeat = requested_heartbeat.unwrap_or(0);
+
+        // If both the client and the server wants heartbeat, then
+        // we setup a heartbeat worker.
+        //
+        // Spec: if <cx> is 0 (the client cannot send heart-beats) or
+        //      <sy> is 0 (the server does not want to receive heart-beats)
+        //      then there will be none
+        // Ref: https://stomp.github.io/stomp-specification-1.2.html#Heart-beating
+        if requested_heartbeat > 0 && server_heartbeat > 0 {
+            // Spec: there will be heart-beats every MAX(<cx>,<sy>) milliseconds
+            let interval = max(requested_heartbeat, server_heartbeat);
+
+            // Setup a channel to signal shutdown and timer reset
+            let (tx, mut rx) = mpsc::channel(1);
+            {
+                let mut transport = client.lock().await;
+                transport.control = Some(tx.clone());
+            }
+            let transport = client.clone();
+
+            //Spawn the actual task that will lopp and send heartbeats
+            tokio::task::spawn(async move {
+                let interval = Duration::from_millis(interval as u64);
+                loop {
+                    // If we recieve `true` we shutdown, if we recieve `false` we reset the timer
+                    if let Ok(Some(shutdown)) = timeout(interval, rx.recv()).await {
+                        if shutdown {
+                            return;
+                        } else {
+                            continue;
+                        }
+                    }
+                    // Timeout reached, so a heartbeat is sent
+                    let mut lock = transport.lock().await;
+                    let _result = lock
+                        .send_no_reset(Message {
+                            content: ToServer::Eol,
+                            extra_headers: vec![],
+                        })
+                        .await;
+                }
+            });
+        }
         Ok(())
     } else {
         Err(anyhow!("unexpected reply: {:?}", msg))
@@ -474,7 +600,17 @@ impl Encoder<Message<ToServer>> for ClientCodec {
         dst: &mut BytesMut,
     ) -> std::result::Result<(), Self::Error> {
         // Convert the message to a frame and serialize it into the buffer
-        item.to_frame().serialize(dst);
+        match item {
+            Message {
+                content: ToServer::Eol,
+                ..
+            } => {
+                dst.put_slice(b"\n"); // Carriage return
+            }
+            _ => {
+                item.to_frame().serialize(dst);
+            }
+        }
         Ok(())
     }
 }

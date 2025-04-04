@@ -624,6 +624,12 @@ impl ToServer {
                 &[(b"transaction", Some(Borrowed(transaction.as_bytes())))],
                 None,
             ),
+            Eol => {
+                //This is a dummy frame, and is never used
+                //Eol is handled dircetly in the encode function,
+                //since it is not really a valid frame
+                Frame::new(b"", &[], None)
+            }
         }
     }
 }

@@ -22,7 +22,7 @@ bytes = "1.8.0"
 custom_debug_derive = "0.6.1"
 anyhow = "1.0"
 futures = "0.3"
-tokio = { version = "1", features = ["net"] }
+tokio = { version = "1", features = ["net", "rt", "sync", "time"] }
 tokio-util = { version = "0.7", features = ["codec"] }
 winnow = "0.7"
 typed-builder = "0.21.0"
