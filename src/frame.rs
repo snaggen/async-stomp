@@ -233,6 +233,40 @@ pub fn parse_header<'a>(input: &mut Partial<&'a [u8]>) -> ModalResult<Header<'a>
     .parse_next(input)
 }
 
+/// Unescape a header value according to STOMP spec
+///
+/// Converts escaped sequences back to their original characters:
+/// - \r -> carriage return
+/// - \n -> line feed
+/// - \c -> colon
+/// - \\ -> backslash
+fn unescape_header_value(value: &[u8]) -> Vec<u8> {
+    let mut result = Vec::with_capacity(value.len());
+    let mut i = 0;
+
+    while i < value.len() {
+        if value[i] == b'\\' && i + 1 < value.len() {
+            match value[i + 1] {
+                b'r' => result.push(b'\r'),
+                b'n' => result.push(b'\n'),
+                b'c' => result.push(b':'),
+                b'\\' => result.push(b'\\'),
+                _ => {
+                    // If not a recognized escape sequence, keep as is
+                    result.push(value[i]);
+                    result.push(value[i + 1]);
+                }
+            }
+            i += 2;
+        } else {
+            result.push(value[i]);
+            i += 1;
+        }
+    }
+
+    result
+}
+
 /// Fetch a header value by key from a collection of headers
 ///
 /// This helper function looks up a header by key and returns its value
@@ -241,7 +275,9 @@ fn fetch_header<'a>(headers: &'a [(&'a [u8], Cow<'a, [u8]>)], key: &'a str) -> O
     let kk = key.as_bytes();
     for &(k, ref v) in headers {
         if k == kk {
-            return String::from_utf8(v.to_vec()).ok();
+            // Unescape any escape sequences in the header value
+            let unescaped = unescape_header_value(v);
+            return String::from_utf8(unescaped).ok();
         }
     }
     None
@@ -254,9 +290,11 @@ fn fetch_header<'a>(headers: &'a [(&'a [u8], Cow<'a, [u8]>)], key: &'a str) -> O
 fn all_headers<'a>(headers: &'a [(&'a [u8], Cow<'a, [u8]>)]) -> Vec<(String, String)> {
     let mut res = Vec::new();
     for &(k, ref v) in headers {
+        // Unescape any escape sequences in the header value
+        let unescaped = unescape_header_value(v);
         let entry = (
             String::from_utf8(k.to_vec()).unwrap(),
-            String::from_utf8(v.to_vec()).unwrap(),
+            String::from_utf8(unescaped).unwrap(),
         );
         res.push(entry);
     }
@@ -275,9 +313,11 @@ fn optional_headers<'a>(
         .iter()
         .filter(|(k, _)| !expected_keys.contains(k))
         .map(|(k, v)| {
+            // Unescape any escape sequences in the header value
+            let unescaped = unescape_header_value(v);
             (
                 String::from_utf8(k.to_vec()).unwrap(),
-                String::from_utf8(v.to_vec()).unwrap(),
+                String::from_utf8(unescaped).unwrap(),
             )
         })
         .collect();
