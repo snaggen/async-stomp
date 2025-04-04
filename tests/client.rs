@@ -5,7 +5,15 @@ use async_stomp::{
 use futures::{future::ok, prelude::*};
 use std::time::Duration;
 
-// Test to send a message
+/// Tests sending messages to a STOMP server
+///
+/// This integration test verifies that a client can successfully connect to a STOMP server
+/// and send multiple messages with different destinations and custom headers.
+/// It validates the basic message sending functionality of the client.
+///
+/// If this test fails, it means there are issues with establishing a connection to the STOMP
+/// server or sending messages, which would prevent the client from successfully communicating
+/// with STOMP message brokers in a real-world scenario.
 #[tokio::test]
 #[ignore]
 async fn test_session() {
@@ -40,7 +48,15 @@ async fn test_session() {
     conn.send(msg).await.expect("Send b");
 }
 
-// Test to receive a message
+/// Tests subscribing to a destination and receiving messages
+///
+/// This integration test verifies that a client can successfully connect to a STOMP server,
+/// subscribe to a destination, and receive messages from that destination. It validates
+/// the subscription functionality and message reception capabilities of the client.
+///
+/// If this test fails, it means there are issues with establishing subscriptions or
+/// receiving messages from the STOMP server, which would prevent the client from
+/// successfully consuming messages from queues or topics in a real-world scenario.
 #[tokio::test]
 #[ignore]
 async fn test_subscribe() {
@@ -79,7 +95,20 @@ async fn test_subscribe() {
         .await;
 }
 
-// Test to send and receive message
+/// Tests the full message cycle: connecting, subscribing, sending, and receiving
+///
+/// This comprehensive integration test verifies a complete STOMP workflow:
+/// 1. Establishing a connection to a STOMP server
+/// 2. Creating a subscription to a destination
+/// 3. Sending a message to that destination
+/// 4. Receiving the message from the subscription
+/// 5. Unsubscribing from the destination
+/// 6. Disconnecting from the server
+///
+/// It validates the end-to-end functionality of the client in a real-world usage scenario.
+///
+/// If this test fails, it means there are issues with one or more of the core STOMP operations,
+/// which would prevent the client from performing its intended functions in production use.
 #[tokio::test]
 #[ignore]
 async fn test_send_subscribe() {

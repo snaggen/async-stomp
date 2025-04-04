@@ -488,6 +488,16 @@ mod tests {
     };
     use bytes::BytesMut;
 
+    /// Tests the creation of a STOMP subscription message
+    ///
+    /// This test validates that a subscription message created using the Subscriber builder
+    /// contains the correct destination, ID, and custom headers. It verifies that the
+    /// subscription message serializes to the same byte sequence as a manually constructed
+    /// equivalent message.
+    ///
+    /// If this test fails, it means the Subscriber builder is not correctly constructing
+    /// STOMP SUBSCRIBE frames according to the protocol specification, which would cause
+    /// client subscriptions to fail or behave incorrectly when connecting to a STOMP server.
     #[test]
     fn subscription_message() {
         let headers = vec![(
@@ -518,6 +528,16 @@ mod tests {
         assert_eq!(expected_buffer, actual_buffer);
     }
 
+    /// Tests the creation of a STOMP connection message
+    ///
+    /// This test validates that a connection message created using the Connector builder
+    /// contains the correct server, virtualhost, login credentials, and custom headers.
+    /// It verifies that the connection message serializes to the same byte sequence as
+    /// a manually constructed equivalent message.
+    ///
+    /// If this test fails, it means the Connector builder is not correctly constructing
+    /// STOMP CONNECT frames according to the protocol specification, which would cause
+    /// client connections to fail when attempting to connect to a STOMP server.
     #[test]
     fn connection_message() {
         let headers = vec![("client-id".to_string(), "ClientTest".to_string())];
