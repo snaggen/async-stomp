@@ -346,6 +346,103 @@ async fn main() -> Result<(), anyhow::Error> {
 }
 ```
 
+STOMP supports three acknowledgment modes:
+
+1. **Auto** (default if not specified)
+   - Messages are automatically acknowledged by the client as soon as they are received
+   - No explicit acknowledgment is required
+   - Example: `vec![("ack".to_string(), "auto".to_string())]`
+
+2. **Client**
+   - The client must explicitly acknowledge messages
+   - An ACK acknowledges all messages received so far on the connection
+   - Example: `vec![("ack".to_string(), "client".to_string())]`
+
+3. **Client-Individual**
+   - The client must explicitly acknowledge each individual message
+   - Each message must be acknowledged separately
+   - Example: `vec![("ack".to_string(), "client-individual".to_string())]`
+
+#### **Example with Auto Acknowledgment (Default)**
+
+```rust
+// Default subscription uses auto acknowledgment
+let subscribe_auto = Subscriber::builder()
+    .destination("queue.standard")
+    .id("sub-auto")
+    .subscribe();
+    
+conn.send(subscribe_auto).await?;
+
+// No need to acknowledge messages - they're auto-acknowledged
+```
+
+#### **Example with Client-Individual Acknowledgment**
+
+```rust
+// Subscribe with client-individual acknowledgment mode
+let subscribe_individual = Subscriber::builder()
+    .destination("queue.critical")
+    .id("sub-individual")
+    .headers(vec![("ack".to_string(), "client-individual".to_string())])
+    .subscribe();
+    
+conn.send(subscribe_individual).await?;
+
+// Process messages in a loop
+while let Some(message) = conn.next().await {
+    if let Ok(msg) = message {
+        if let FromServer::Message { message_id, body, .. } = msg.content {
+            // Process the message...
+            println!("Processing message: {}", message_id);
+            
+            // Individual acknowledgment after successful processing
+            conn.send(
+                ToServer::Ack {
+                    id: message_id,
+                    transaction: None,
+                }
+                .into()
+            ).await?;
+        }
+    }
+}
+```
+
+#### **Using Transactions with Acknowledgments**
+
+You can also combine transactions with acknowledgments to ensure atomic processing:
+
+```rust
+// Start a transaction
+let transaction_id = "tx-1";
+conn.send(ToServer::Begin { 
+    transaction: transaction_id.to_string() 
+}.into()).await?;
+
+// Acknowledge multiple messages within the transaction
+conn.send(
+    ToServer::Ack {
+        id: "message-123".to_string(),
+        transaction: Some(transaction_id.to_string()),
+    }
+    .into()
+).await?;
+
+conn.send(
+    ToServer::Ack {
+        id: "message-124".to_string(), 
+        transaction: Some(transaction_id.to_string()),
+    }
+    .into()
+).await?;
+
+// Commit the transaction to finalize all acknowledgments
+conn.send(ToServer::Commit { 
+    transaction: transaction_id.to_string() 
+}.into()).await?;
+```
+
 ### Connection Lifecycle Management
 
 ```rust

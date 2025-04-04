@@ -233,6 +233,40 @@ pub fn parse_header<'a>(input: &mut Partial<&'a [u8]>) -> ModalResult<Header<'a>
     .parse_next(input)
 }
 
+/// Unescape a header value according to STOMP spec
+///
+/// Converts escaped sequences back to their original characters:
+/// - \r -> carriage return
+/// - \n -> line feed
+/// - \c -> colon
+/// - \\ -> backslash
+fn unescape_header_value(value: &[u8]) -> Vec<u8> {
+    let mut result = Vec::with_capacity(value.len());
+    let mut i = 0;
+
+    while i < value.len() {
+        if value[i] == b'\\' && i + 1 < value.len() {
+            match value[i + 1] {
+                b'r' => result.push(b'\r'),
+                b'n' => result.push(b'\n'),
+                b'c' => result.push(b':'),
+                b'\\' => result.push(b'\\'),
+                _ => {
+                    // If not a recognized escape sequence, keep as is
+                    result.push(value[i]);
+                    result.push(value[i + 1]);
+                }
+            }
+            i += 2;
+        } else {
+            result.push(value[i]);
+            i += 1;
+        }
+    }
+
+    result
+}
+
 /// Fetch a header value by key from a collection of headers
 ///
 /// This helper function looks up a header by key and returns its value
@@ -241,7 +275,9 @@ fn fetch_header<'a>(headers: &'a [(&'a [u8], Cow<'a, [u8]>)], key: &'a str) -> O
     let kk = key.as_bytes();
     for &(k, ref v) in headers {
         if k == kk {
-            return String::from_utf8(v.to_vec()).ok();
+            // Unescape any escape sequences in the header value
+            let unescaped = unescape_header_value(v);
+            return String::from_utf8(unescaped).ok();
         }
     }
     None
@@ -254,9 +290,11 @@ fn fetch_header<'a>(headers: &'a [(&'a [u8], Cow<'a, [u8]>)], key: &'a str) -> O
 fn all_headers<'a>(headers: &'a [(&'a [u8], Cow<'a, [u8]>)]) -> Vec<(String, String)> {
     let mut res = Vec::new();
     for &(k, ref v) in headers {
+        // Unescape any escape sequences in the header value
+        let unescaped = unescape_header_value(v);
         let entry = (
             String::from_utf8(k.to_vec()).unwrap(),
-            String::from_utf8(v.to_vec()).unwrap(),
+            String::from_utf8(unescaped).unwrap(),
         );
         res.push(entry);
     }
@@ -275,9 +313,11 @@ fn optional_headers<'a>(
         .iter()
         .filter(|(k, _)| !expected_keys.contains(k))
         .map(|(k, v)| {
+            // Unescape any escape sequences in the header value
+            let unescaped = unescape_header_value(v);
             (
                 String::from_utf8(k.to_vec()).unwrap(),
-                String::from_utf8(v.to_vec()).unwrap(),
+                String::from_utf8(unescaped).unwrap(),
             )
         })
         .collect();
@@ -679,6 +719,16 @@ mod tests {
         assert_eq!(&*buffer, data, "frame data doesnt match");
     }
 
+    /// Tests STOMP CONNECT frame parsing and serialization with a heartbeat configuration
+    ///
+    /// This test validates that a CONNECT frame with heartbeat configuration can be correctly
+    /// parsed from raw bytes into a Frame structure and then serialized back to the exact
+    /// same byte representation. It verifies the command, headers, and heart-beat values
+    /// are preserved correctly through the parse-serialize cycle.
+    ///
+    /// If this test fails, it means the STOMP frame parser or serializer is not correctly
+    /// handling CONNECT frames with heartbeat configurations, which would cause connection
+    /// issues or prevent proper heartbeat functionality when connecting to a STOMP server.
     #[test]
     /// Testing:
     /// https://stomp.github.io/stomp-specification-1.2.html#CONNECT
@@ -704,6 +754,16 @@ passcode:password\n\n\x00"
         parse_and_serialize_to_server(&data, frame, headers_expect, None);
     }
 
+    /// Tests STOMP CONNECT frame parsing and serialization without heartbeat configuration
+    ///
+    /// This test validates that a CONNECT frame without heartbeat configuration can be correctly
+    /// parsed from raw bytes into a Frame structure and then serialized back to the exact
+    /// same byte representation. It verifies the command and headers are preserved correctly
+    /// through the parse-serialize cycle.
+    ///
+    /// If this test fails, it means the STOMP frame parser or serializer is not correctly
+    /// handling basic CONNECT frames without optional heartbeat settings, which would cause
+    /// connection failures when connecting to a STOMP server.
     #[test]
     /// Testing:
     /// https://stomp.github.io/stomp-specification-1.2.html#CONNECT
@@ -727,6 +787,16 @@ passcode:password\n\n\x00";
         parse_and_serialize_to_server(data, frame, headers_expect, None);
     }
 
+    /// Tests STOMP DISCONNECT frame parsing and serialization
+    ///
+    /// This test validates that a DISCONNECT frame can be correctly parsed from raw bytes
+    /// into a Frame structure and then serialized back to the exact same byte representation.
+    /// It verifies the command and receipt header are preserved correctly through the
+    /// parse-serialize cycle.
+    ///
+    /// If this test fails, it means the STOMP frame parser or serializer is not correctly
+    /// handling DISCONNECT frames, which would cause issues with graceful client disconnection
+    /// and potentially leave server resources allocated unnecessarily.
     #[test]
     /// Testing:
     /// https://stomp.github.io/stomp-specification-1.2.html#DISCONNECT
@@ -739,6 +809,16 @@ passcode:password\n\n\x00";
         parse_and_serialize_to_server(data, frame, headers_expect, None);
     }
 
+    /// Tests STOMP SEND frame parsing and serialization with minimal headers
+    ///
+    /// This test validates that a SEND frame with only the required destination header
+    /// can be correctly parsed from raw bytes into a Frame structure and then serialized
+    /// back to the exact same byte representation. It verifies the command, headers, and body
+    /// are preserved correctly through the parse-serialize cycle.
+    ///
+    /// If this test fails, it means the STOMP frame parser or serializer is not correctly
+    /// handling basic SEND frames, which would prevent clients from sending messages to
+    /// destinations in the message broker.
     #[test]
     /// Testing:
     /// https://stomp.github.io/stomp-specification-1.2.html#SEND
@@ -756,6 +836,16 @@ passcode:password\n\n\x00";
         parse_and_serialize_to_server(&data, frame, headers_expect, Some(body));
     }
 
+    /// Tests STOMP SEND frame parsing and serialization with content-length and content-type headers
+    ///
+    /// This test validates that a SEND frame with recommended headers (content-type and content-length)
+    /// can be correctly parsed from raw bytes into a Frame structure and then serialized back to the
+    /// exact same byte representation. It especially verifies that a message body containing null bytes
+    /// is handled correctly when a content-length header is present.
+    ///
+    /// If this test fails, it means the STOMP frame parser or serializer is not correctly handling
+    /// SEND frames with content-length headers, which would cause binary message data or message bodies
+    /// containing null bytes to be corrupted or incorrectly processed.
     #[test]
     /// Testing:
     /// https://stomp.github.io/stomp-specification-1.2.html#SEND
@@ -777,5 +867,81 @@ passcode:password\n\n\x00";
 
         assert_eq!(frame.command, b"SEND");
         parse_and_serialize_to_server(&data, frame, headers_expect, Some(body.as_bytes()));
+    }
+
+    /// Tests parsing of STOMP MESSAGE frame with escaped characters in headers
+    ///
+    /// This test validates that a MESSAGE frame with headers containing escape sequences
+    /// (e.g., \n, \r, \c, \\) can be correctly parsed and the escape sequences properly
+    /// converted to their corresponding characters. It verifies the header unescape
+    /// functionality works correctly for all supported escape sequences.
+    ///
+    /// If this test fails, it means the header unescaping mechanism is not working correctly,
+    /// which would cause headers with special characters to be misinterpreted and potentially
+    /// lead to protocol errors or incorrect message routing.
+    #[test]
+    /// Test parsing of message with all escape sequences
+    fn parse_message_with_escaped_characters() {
+        // Create a MESSAGE frame with all types of escaped characters
+        let data = b"MESSAGE
+destination:/queue/test
+message-id:ID\\cnotificationator\\n\\rwith\\\\backslash-1\\c1
+subscription:sub-123\n\ntest message body\x00";
+
+        // Parse the frame
+        let frame = parse_frame(&mut Partial::new(data.as_slice())).unwrap();
+
+        // Convert to server message
+        let message = frame.to_server_msg().unwrap();
+
+        // Verify that all escape sequences have been unescaped properly
+        if let FromServer::Message { message_id, .. } = message.content {
+            assert_eq!(
+                message_id, "ID:notificationator\n\rwith\\backslash-1:1",
+                "Message ID should have all escape sequences unescaped"
+            );
+        } else {
+            panic!("Expected Message type but got: {:?}", message.content);
+        }
+    }
+
+    /// Tests serialization of STOMP messages with special characters in headers
+    ///
+    /// This test validates that when creating a STOMP message with special characters
+    /// in headers (e.g., colons, newlines, carriage returns, backslashes), these characters
+    /// are properly escaped in the serialized output according to the STOMP specification.
+    ///
+    /// If this test fails, it means the header escaping mechanism is not working correctly,
+    /// which would cause messages with special characters in headers to be rejected by the
+    /// server or lead to protocol errors when communicating with a STOMP broker.
+    #[test]
+    /// Test that when sending a message with special characters back to the server,
+    /// the special characters are properly escaped
+    fn serialize_message_with_special_characters() {
+        // Create a message ID with all types of special characters
+        let message_id = "ID:notificationator\n\rwith\\backslash-1:1";
+
+        // Create an ACK message with this ID
+        let ack_message = Message {
+            content: ToServer::Ack {
+                id: message_id.to_string(),
+                transaction: None,
+            },
+            extra_headers: vec![],
+        };
+
+        // Serialize the message
+        let mut buffer = BytesMut::new();
+        ack_message.to_frame().serialize(&mut buffer);
+
+        // Check that the serialized message contains the properly escaped characters
+        let serialized = String::from_utf8_lossy(&buffer);
+
+        // Each special character should be properly escaped
+        assert!(
+            serialized.contains("ID\\cnotificationator\\n\\rwith\\\\backslash-1\\c1"),
+            "Serialized message should contain properly escaped special characters.\nActual: {}",
+            serialized
+        );
     }
 }
