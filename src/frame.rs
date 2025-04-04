@@ -719,6 +719,16 @@ mod tests {
         assert_eq!(&*buffer, data, "frame data doesnt match");
     }
 
+    /// Tests STOMP CONNECT frame parsing and serialization with a heartbeat configuration
+    ///
+    /// This test validates that a CONNECT frame with heartbeat configuration can be correctly
+    /// parsed from raw bytes into a Frame structure and then serialized back to the exact
+    /// same byte representation. It verifies the command, headers, and heart-beat values
+    /// are preserved correctly through the parse-serialize cycle.
+    ///
+    /// If this test fails, it means the STOMP frame parser or serializer is not correctly
+    /// handling CONNECT frames with heartbeat configurations, which would cause connection
+    /// issues or prevent proper heartbeat functionality when connecting to a STOMP server.
     #[test]
     /// Testing:
     /// https://stomp.github.io/stomp-specification-1.2.html#CONNECT
@@ -744,6 +754,16 @@ passcode:password\n\n\x00"
         parse_and_serialize_to_server(&data, frame, headers_expect, None);
     }
 
+    /// Tests STOMP CONNECT frame parsing and serialization without heartbeat configuration
+    ///
+    /// This test validates that a CONNECT frame without heartbeat configuration can be correctly
+    /// parsed from raw bytes into a Frame structure and then serialized back to the exact
+    /// same byte representation. It verifies the command and headers are preserved correctly
+    /// through the parse-serialize cycle.
+    ///
+    /// If this test fails, it means the STOMP frame parser or serializer is not correctly
+    /// handling basic CONNECT frames without optional heartbeat settings, which would cause
+    /// connection failures when connecting to a STOMP server.
     #[test]
     /// Testing:
     /// https://stomp.github.io/stomp-specification-1.2.html#CONNECT
@@ -767,6 +787,16 @@ passcode:password\n\n\x00";
         parse_and_serialize_to_server(data, frame, headers_expect, None);
     }
 
+    /// Tests STOMP DISCONNECT frame parsing and serialization
+    ///
+    /// This test validates that a DISCONNECT frame can be correctly parsed from raw bytes
+    /// into a Frame structure and then serialized back to the exact same byte representation.
+    /// It verifies the command and receipt header are preserved correctly through the
+    /// parse-serialize cycle.
+    ///
+    /// If this test fails, it means the STOMP frame parser or serializer is not correctly
+    /// handling DISCONNECT frames, which would cause issues with graceful client disconnection
+    /// and potentially leave server resources allocated unnecessarily.
     #[test]
     /// Testing:
     /// https://stomp.github.io/stomp-specification-1.2.html#DISCONNECT
@@ -779,6 +809,16 @@ passcode:password\n\n\x00";
         parse_and_serialize_to_server(data, frame, headers_expect, None);
     }
 
+    /// Tests STOMP SEND frame parsing and serialization with minimal headers
+    ///
+    /// This test validates that a SEND frame with only the required destination header
+    /// can be correctly parsed from raw bytes into a Frame structure and then serialized
+    /// back to the exact same byte representation. It verifies the command, headers, and body
+    /// are preserved correctly through the parse-serialize cycle.
+    ///
+    /// If this test fails, it means the STOMP frame parser or serializer is not correctly
+    /// handling basic SEND frames, which would prevent clients from sending messages to
+    /// destinations in the message broker.
     #[test]
     /// Testing:
     /// https://stomp.github.io/stomp-specification-1.2.html#SEND
@@ -796,6 +836,16 @@ passcode:password\n\n\x00";
         parse_and_serialize_to_server(&data, frame, headers_expect, Some(body));
     }
 
+    /// Tests STOMP SEND frame parsing and serialization with content-length and content-type headers
+    ///
+    /// This test validates that a SEND frame with recommended headers (content-type and content-length)
+    /// can be correctly parsed from raw bytes into a Frame structure and then serialized back to the
+    /// exact same byte representation. It especially verifies that a message body containing null bytes
+    /// is handled correctly when a content-length header is present.
+    ///
+    /// If this test fails, it means the STOMP frame parser or serializer is not correctly handling
+    /// SEND frames with content-length headers, which would cause binary message data or message bodies
+    /// containing null bytes to be corrupted or incorrectly processed.
     #[test]
     /// Testing:
     /// https://stomp.github.io/stomp-specification-1.2.html#SEND
