@@ -818,4 +818,80 @@ passcode:password\n\n\x00";
         assert_eq!(frame.command, b"SEND");
         parse_and_serialize_to_server(&data, frame, headers_expect, Some(body.as_bytes()));
     }
+
+    /// Tests parsing of STOMP MESSAGE frame with escaped characters in headers
+    ///
+    /// This test validates that a MESSAGE frame with headers containing escape sequences
+    /// (e.g., \n, \r, \c, \\) can be correctly parsed and the escape sequences properly
+    /// converted to their corresponding characters. It verifies the header unescape
+    /// functionality works correctly for all supported escape sequences.
+    ///
+    /// If this test fails, it means the header unescaping mechanism is not working correctly,
+    /// which would cause headers with special characters to be misinterpreted and potentially
+    /// lead to protocol errors or incorrect message routing.
+    #[test]
+    /// Test parsing of message with all escape sequences
+    fn parse_message_with_escaped_characters() {
+        // Create a MESSAGE frame with all types of escaped characters
+        let data = b"MESSAGE
+destination:/queue/test
+message-id:ID\\cnotificationator\\n\\rwith\\\\backslash-1\\c1
+subscription:sub-123\n\ntest message body\x00";
+
+        // Parse the frame
+        let frame = parse_frame(&mut Partial::new(data.as_slice())).unwrap();
+
+        // Convert to server message
+        let message = frame.to_server_msg().unwrap();
+
+        // Verify that all escape sequences have been unescaped properly
+        if let FromServer::Message { message_id, .. } = message.content {
+            assert_eq!(
+                message_id, "ID:notificationator\n\rwith\\backslash-1:1",
+                "Message ID should have all escape sequences unescaped"
+            );
+        } else {
+            panic!("Expected Message type but got: {:?}", message.content);
+        }
+    }
+
+    /// Tests serialization of STOMP messages with special characters in headers
+    ///
+    /// This test validates that when creating a STOMP message with special characters
+    /// in headers (e.g., colons, newlines, carriage returns, backslashes), these characters
+    /// are properly escaped in the serialized output according to the STOMP specification.
+    ///
+    /// If this test fails, it means the header escaping mechanism is not working correctly,
+    /// which would cause messages with special characters in headers to be rejected by the
+    /// server or lead to protocol errors when communicating with a STOMP broker.
+    #[test]
+    /// Test that when sending a message with special characters back to the server,
+    /// the special characters are properly escaped
+    fn serialize_message_with_special_characters() {
+        // Create a message ID with all types of special characters
+        let message_id = "ID:notificationator\n\rwith\\backslash-1:1";
+
+        // Create an ACK message with this ID
+        let ack_message = Message {
+            content: ToServer::Ack {
+                id: message_id.to_string(),
+                transaction: None,
+            },
+            extra_headers: vec![],
+        };
+
+        // Serialize the message
+        let mut buffer = BytesMut::new();
+        ack_message.to_frame().serialize(&mut buffer);
+
+        // Check that the serialized message contains the properly escaped characters
+        let serialized = String::from_utf8_lossy(&buffer);
+
+        // Each special character should be properly escaped
+        assert!(
+            serialized.contains("ID\\cnotificationator\\n\\rwith\\\\backslash-1\\c1"),
+            "Serialized message should contain properly escaped special characters.\nActual: {}",
+            serialized
+        );
+    }
 }
