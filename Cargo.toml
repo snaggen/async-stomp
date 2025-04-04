@@ -1,6 +1,6 @@
 [package]
 name = "async-stomp"
-version = "0.6.0"
+version = "0.6.1"
 description = "An asynchronous streaming STOMP client"
 authors = [
     "Mattias Eriksson <snaggen@mayam.com>",
@@ -26,8 +26,8 @@ tokio = { version = "1", features = ["net"] }
 tokio-util = { version = "0.7", features = ["codec"] }
 winnow = "0.7"
 typed-builder = "0.21.0"
-tokio-rustls = "0.24.1"
-webpki-roots = "0.25.2"
+tokio-rustls = "0.26.2"
+webpki-roots = "0.26.8"
 rustls = "0.23.25"
 
 [dev-dependencies]

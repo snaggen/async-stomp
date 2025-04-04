@@ -4,13 +4,14 @@ use anyhow::{anyhow, bail};
 use bytes::{Buf, BytesMut};
 use futures::prelude::*;
 use futures::sink::SinkExt;
+use rustls::pki_types::ServerName;
 use std::fmt;
+use std::net::IpAddr;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
 use tokio::net::TcpStream;
 use tokio_rustls::client::TlsStream;
-use tokio_rustls::rustls::{self, ClientConfig, RootCertStore};
 use tokio_rustls::TlsConnector;
 use tokio_util::codec::{Decoder, Encoder, Framed};
 use typed_builder::TypedBuilder;
@@ -188,22 +189,14 @@ impl<S: tokio::net::ToSocketAddrs + Clone, V: Into<String> + Clone> Connector<S,
     /// This method configures a TLS connector with the system's default trust anchors
     /// for certificate verification.
     async fn create_tls_connector(&self) -> Result<TlsConnector> {
-        // Create an empty root certificate store
-        let mut root_cert_store = RootCertStore::empty();
-
-        // Add webpki default trust anchors (CA certificates)
-        root_cert_store.add_trust_anchors(webpki_roots::TLS_SERVER_ROOTS.iter().map(|ta| {
-            rustls::OwnedTrustAnchor::from_subject_spki_name_constraints(
-                ta.subject,
-                ta.spki,
-                ta.name_constraints,
-            )
-        }));
+        // Create a root certificate store with webpki's built-in roots
+        let root_store = rustls::RootCertStore {
+            roots: webpki_roots::TLS_SERVER_ROOTS.to_vec(),
+        };
 
         // Create a TLS client configuration with the root certificates
-        let config = ClientConfig::builder()
-            .with_safe_defaults()
-            .with_root_certificates(root_cert_store)
+        let config = rustls::ClientConfig::builder()
+            .with_root_certificates(root_store)
             .with_no_client_auth();
 
         Ok(TlsConnector::from(Arc::new(config)))
@@ -238,9 +231,24 @@ impl<S: tokio::net::ToSocketAddrs + Clone, V: Into<String> + Clone> Connector<S,
             // Create TLS connector
             let tls_connector = self.create_tls_connector().await?;
 
-            // Convert string to DNS name for TLS verification
-            let dns_name = rustls::ServerName::try_from(server_name.as_str())
-                .map_err(|_| anyhow!("Invalid DNS name: {}", server_name))?;
+            // Create a copy of server_name to avoid the borrow after move issue
+            let server_name_copy = server_name.clone();
+
+            // Try to parse the server name as an IP address first
+            let dns_name = if let Ok(ip_addr) = server_name_copy.parse::<IpAddr>() {
+                // Handle IP address
+                match ip_addr {
+                    IpAddr::V4(ipv4) => ServerName::IpAddress(ipv4.into()),
+                    IpAddr::V6(ipv6) => ServerName::IpAddress(ipv6.into()),
+                }
+            } else {
+                // Handle DNS name
+                ServerName::DnsName(
+                    server_name_copy
+                        .try_into()
+                        .map_err(|_| anyhow!("Invalid DNS name: {}", server_name))?,
+                )
+            };
 
             // Connect with TLS
             let tls_stream = tls_connector.connect(dns_name, tcp).await?;
