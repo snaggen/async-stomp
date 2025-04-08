@@ -25,7 +25,6 @@ The library is built on top of Tokio, leveraging its async I/O capabilities to p
   - Transactions
 - TLS/SSL support for secure connections
 - Custom headers support for advanced configurations
-- Built-in heartbeat support
 - Error handling with detailed error information
 
 ## Installation
