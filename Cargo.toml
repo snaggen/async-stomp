@@ -15,7 +15,7 @@ keywords = ["stomp", "tokio", "streaming", "async"]
 license = "EUPL-1.2"
 readme = "README.md"
 categories = ["network-programming", "parser-implementations"]
-edition = "2021"
+edition = "2024"
 
 [dependencies]
 bytes = "1.10.1"
