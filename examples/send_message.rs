@@ -1,5 +1,5 @@
-use async_stomp::client::Connector;
 use async_stomp::ToServer;
+use async_stomp::client::Connector;
 use futures::prelude::*;
 
 // You can start a simple STOMP server with docker:

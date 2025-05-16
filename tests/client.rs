@@ -1,6 +1,6 @@
 use async_stomp::{
-    client::{Connector, Subscriber},
     FromServer, Message, ToServer,
+    client::{Connector, Subscriber},
 };
 use futures::{future::ok, prelude::*};
 use std::time::Duration;

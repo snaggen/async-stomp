@@ -11,13 +11,13 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
 use tokio::net::TcpStream;
-use tokio_rustls::client::TlsStream;
 use tokio_rustls::TlsConnector;
+use tokio_rustls::client::TlsStream;
 use tokio_util::codec::{Decoder, Encoder, Framed};
 use typed_builder::TypedBuilder;
+use winnow::Partial;
 use winnow::error::ErrMode;
 use winnow::stream::Offset;
-use winnow::Partial;
 
 /// The primary transport type used by STOMP clients
 ///
@@ -141,14 +141,14 @@ pub struct Connector<S: tokio::net::ToSocketAddrs + Clone, V: Into<String> + Clo
 /// Implementation of the builder connect method to allow the builder to directly connect
 #[allow(non_camel_case_types)]
 impl<
-        S: tokio::net::ToSocketAddrs + Clone,
-        V: Into<String> + Clone,
-        __login: ::typed_builder::Optional<Option<String>>,
-        __passcode: ::typed_builder::Optional<Option<String>>,
-        __headers: ::typed_builder::Optional<Vec<(String, String)>>,
-        __use_tls: ::typed_builder::Optional<bool>,
-        __tls_server_name: ::typed_builder::Optional<Option<String>>,
-    >
+    S: tokio::net::ToSocketAddrs + Clone,
+    V: Into<String> + Clone,
+    __login: ::typed_builder::Optional<Option<String>>,
+    __passcode: ::typed_builder::Optional<Option<String>>,
+    __headers: ::typed_builder::Optional<Vec<(String, String)>>,
+    __use_tls: ::typed_builder::Optional<bool>,
+    __tls_server_name: ::typed_builder::Optional<Option<String>>,
+>
     ConnectorBuilder<
         S,
         V,
@@ -391,11 +391,8 @@ pub struct Subscriber<S: Into<String>, I: Into<String>> {
 
 /// Implementation of the builder subscribe method to allow direct subscription creation
 #[allow(non_camel_case_types)]
-impl<
-        S: Into<String>,
-        I: Into<String>,
-        __headers: ::typed_builder::Optional<Vec<(String, String)>>,
-    > SubscriberBuilder<S, I, ((S,), (I,), __headers)>
+impl<S: Into<String>, I: Into<String>, __headers: ::typed_builder::Optional<Vec<(String, String)>>>
+    SubscriberBuilder<S, I, ((S,), (I,), __headers)>
 {
     /// Creates a SUBSCRIBE message using the configured parameters
     ///
@@ -491,8 +488,8 @@ impl Encoder<Message<ToServer>> for ClientCodec {
 mod tests {
 
     use crate::{
-        client::{Connector, Subscriber},
         Message, ToServer,
+        client::{Connector, Subscriber},
     };
     use bytes::BytesMut;
 

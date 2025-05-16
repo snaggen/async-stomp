@@ -1,5 +1,5 @@
-use async_stomp::client::{Connector, Subscriber};
 use async_stomp::FromServer;
+use async_stomp::client::{Connector, Subscriber};
 use futures::prelude::*;
 
 // This example demonstrates receiving messages from a STOMP server using TLS

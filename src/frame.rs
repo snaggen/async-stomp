@@ -3,11 +3,11 @@ use anyhow::{anyhow, bail};
 use bytes::{BufMut, BytesMut};
 use std::borrow::Cow;
 use winnow::{
+    ModalResult, Parser, Partial,
     ascii::{alpha1, line_ending, till_line_ending},
     combinator::{delimited, opt, repeat, separated_pair, terminated, trace},
     error::StrContext::Label,
     token::{literal, take, take_till, take_until},
-    ModalResult, Parser, Partial,
 };
 
 /// Type definitions for working with headers
@@ -164,11 +164,7 @@ fn get_content_length(headers: &[(&[u8], Cow<[u8]>)]) -> Option<u32> {
 ///
 /// This helper function is used during parsing to convert empty body slices to None.
 fn is_empty_slice(s: &[u8]) -> Option<&[u8]> {
-    if s.is_empty() {
-        None
-    } else {
-        Some(s)
-    }
+    if s.is_empty() { None } else { Some(s) }
 }
 
 /// Parse a complete STOMP frame from a byte buffer
@@ -321,11 +317,7 @@ fn optional_headers<'a>(
             )
         })
         .collect();
-    if res.is_empty() {
-        None
-    } else {
-        Some(res)
-    }
+    if res.is_empty() { None } else { Some(res) }
 }
 
 /// Fetch a required header value by key from a collection of headers
