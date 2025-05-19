@@ -29,6 +29,7 @@ pub type ClientTransport = Framed<TransportStream, ClientCodec>;
 ///
 /// This type abstracts over the two possible connection types to provide a uniform interface
 /// for the rest of the library. It implements AsyncRead and AsyncWrite to handle all IO operations.
+#[allow(clippy::large_enum_variant)]
 pub enum TransportStream {
     /// A plain, unencrypted TCP connection
     Plain(TcpStream),
