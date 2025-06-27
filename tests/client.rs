@@ -88,7 +88,7 @@ async fn test_subscribe() {
                     String::from_utf8_lossy(&body.expect("No body in message"))
                 );
             } else {
-                println!("{:?}", item);
+                println!("{item:?}");
             }
             ok(())
         })
@@ -174,7 +174,7 @@ async fn test_send_subscribe() {
                 String::from_utf8_lossy(&body.expect("No body in message"))
             );
         } else {
-            println!("{:?}", item);
+            println!("{item:?}");
         }
         ok(())
     });

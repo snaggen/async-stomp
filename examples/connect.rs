@@ -75,7 +75,7 @@ async fn main() -> Result<(), anyhow::Error> {
                 String::from_utf8_lossy(&body.unwrap())
             );
         } else {
-            println!("{:?}", item);
+            println!("{item:?}");
         }
         ok(())
     });

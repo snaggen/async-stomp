@@ -30,8 +30,8 @@ async fn main() -> Result<(), std::io::Error> {
             message_id, body, ..
         } = item.unwrap().content
         {
-            println!("{:?}", body);
-            println!("{}", message_id);
+            println!("{body:?}");
+            println!("{message_id}");
         }
     }
     Ok(())

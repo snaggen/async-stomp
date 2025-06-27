@@ -564,7 +564,7 @@ impl ToServer {
                     (b"login", sb(login)),
                     (
                         b"heart-beat",
-                        heartbeat.map(|(v1, v2)| Owned(format!("{},{}", v1, v2).into())),
+                        heartbeat.map(|(v1, v2)| Owned(format!("{v1},{v2}").into())),
                     ),
                     (b"passcode", sb(passcode)),
                 ],
@@ -932,8 +932,7 @@ subscription:sub-123\n\ntest message body\x00";
         // Each special character should be properly escaped
         assert!(
             serialized.contains("ID\\cnotificationator\\n\\rwith\\\\backslash-1\\c1"),
-            "Serialized message should contain properly escaped special characters.\nActual: {}",
-            serialized
+            "Serialized message should contain properly escaped special characters.\nActual: {serialized}"
         );
     }
 }

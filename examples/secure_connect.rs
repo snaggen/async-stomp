@@ -53,15 +53,14 @@ async fn main() -> Result<(), anyhow::Error> {
                         );
                     } else {
                         println!(
-                            "Received empty message (id: {}) from {}",
-                            message_id, destination
+                            "Received empty message (id: {message_id}) from {destination}"
                         );
                     }
                 } else {
-                    println!("Received non-message frame: {:?}", message);
+                    println!("Received non-message frame: {message:?}");
                 }
             }
-            Err(e) => println!("Error receiving message: {}", e),
+            Err(e) => println!("Error receiving message: {e}"),
         }
     }
 
