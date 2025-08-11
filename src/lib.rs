@@ -271,7 +271,7 @@ impl Message<ToServer> {
     ///
     /// This method converts the high-level Message to the low-level Frame
     /// representation needed for serialization.
-    fn to_frame(&self) -> Frame {
+    fn to_frame<'a>(&'a self) -> Frame<'a> {
         // Create a frame from the message content
         let mut frame = self.content.to_frame();
         // Add any extra headers to the frame

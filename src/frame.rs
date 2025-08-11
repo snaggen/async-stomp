@@ -542,7 +542,7 @@ impl ToServer {
     ///
     /// This method creates a Frame representation of the message
     /// that can be serialized and sent over the wire.
-    pub(crate) fn to_frame(&self) -> Frame {
+    pub(crate) fn to_frame<'a>(&'a self) -> Frame<'a> {
         use self::opt_str_to_bytes as sb;
         use Cow::*;
         use ToServer::*;

@@ -52,9 +52,7 @@ async fn main() -> Result<(), anyhow::Error> {
                             String::from_utf8_lossy(&content)
                         );
                     } else {
-                        println!(
-                            "Received empty message (id: {message_id}) from {destination}"
-                        );
+                        println!("Received empty message (id: {message_id}) from {destination}");
                     }
                 } else {
                     println!("Received non-message frame: {message:?}");
