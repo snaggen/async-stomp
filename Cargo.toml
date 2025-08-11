@@ -27,8 +27,8 @@ tokio-util = { version = "0.7", features = ["codec"] }
 winnow = "0.7"
 typed-builder = "0.21.0"
 tokio-rustls = "0.26.2"
-webpki-roots = "1.0.1"
-rustls = "0.23.28"
+webpki-roots = "1.0.2"
+rustls = "0.23.31"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["time", "macros", "rt-multi-thread"] }
