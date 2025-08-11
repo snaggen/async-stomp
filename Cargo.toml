@@ -1,6 +1,6 @@
 [package]
 name = "async-stomp"
-version = "0.6.1"
+version = "0.6.2"
 description = "An asynchronous streaming STOMP client"
 authors = [
     "Mattias Eriksson <snaggen@mayam.com>",
