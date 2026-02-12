@@ -18,7 +18,7 @@ categories = ["network-programming", "parser-implementations"]
 edition = "2024"
 
 [dependencies]
-bytes = "1.10.1"
+bytes = "1.11.1"
 custom_debug_derive = "0.6.2"
 anyhow = "1.0"
 futures = "0.3"
@@ -26,9 +26,9 @@ tokio = { version = "1", features = ["net"] }
 tokio-util = { version = "0.7", features = ["codec"] }
 winnow = "0.7"
 typed-builder = "0.23.2"
-tokio-rustls = "0.26.2"
-webpki-roots = "1.0.2"
-rustls = "0.23.31"
+tokio-rustls = "0.26.4"
+webpki-roots = "1.0.6"
+rustls = "0.23.36"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["time", "macros", "rt-multi-thread"] }
