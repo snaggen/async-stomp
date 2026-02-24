@@ -144,11 +144,11 @@ pub struct Connector<S: tokio::net::ToSocketAddrs + Clone, V: Into<String> + Clo
 impl<
     S: tokio::net::ToSocketAddrs + Clone,
     V: Into<String> + Clone,
-    __login: ::typed_builder::Optional<Option<String>>,
-    __passcode: ::typed_builder::Optional<Option<String>>,
-    __headers: ::typed_builder::Optional<Vec<(String, String)>>,
-    __use_tls: ::typed_builder::Optional<bool>,
-    __tls_server_name: ::typed_builder::Optional<Option<String>>,
+    __login,
+    __passcode,
+    __headers,
+    __use_tls,
+    __tls_server_name,
 >
     ConnectorBuilder<
         S,
@@ -163,6 +163,57 @@ impl<
             __tls_server_name,
         ),
     >
+where
+    Connector<S, V>: for<'__typed_builder_lifetime_for_default> ::typed_builder::NextFieldDefault<
+            (
+                &'__typed_builder_lifetime_for_default S,
+                &'__typed_builder_lifetime_for_default V,
+                __login,
+            ),
+            Output = Option<String>,
+        >,
+    Connector<S, V>: for<'__typed_builder_lifetime_for_default> ::typed_builder::NextFieldDefault<
+            (
+                &'__typed_builder_lifetime_for_default S,
+                &'__typed_builder_lifetime_for_default V,
+                &'__typed_builder_lifetime_for_default Option<String>,
+                __passcode,
+            ),
+            Output = Option<String>,
+        >,
+    Connector<S, V>: for<'__typed_builder_lifetime_for_default> ::typed_builder::NextFieldDefault<
+            (
+                &'__typed_builder_lifetime_for_default S,
+                &'__typed_builder_lifetime_for_default V,
+                &'__typed_builder_lifetime_for_default Option<String>,
+                &'__typed_builder_lifetime_for_default Option<String>,
+                __headers,
+            ),
+            Output = Vec<(String, String)>,
+        >,
+    Connector<S, V>: for<'__typed_builder_lifetime_for_default> ::typed_builder::NextFieldDefault<
+            (
+                &'__typed_builder_lifetime_for_default S,
+                &'__typed_builder_lifetime_for_default V,
+                &'__typed_builder_lifetime_for_default Option<String>,
+                &'__typed_builder_lifetime_for_default Option<String>,
+                &'__typed_builder_lifetime_for_default Vec<(String, String)>,
+                __use_tls,
+            ),
+            Output = bool,
+        >,
+    Connector<S, V>: for<'__typed_builder_lifetime_for_default> ::typed_builder::NextFieldDefault<
+            (
+                &'__typed_builder_lifetime_for_default S,
+                &'__typed_builder_lifetime_for_default V,
+                &'__typed_builder_lifetime_for_default Option<String>,
+                &'__typed_builder_lifetime_for_default Option<String>,
+                &'__typed_builder_lifetime_for_default Vec<(String, String)>,
+                &'__typed_builder_lifetime_for_default bool,
+                __tls_server_name,
+            ),
+            Output = Option<String>,
+        >,
 {
     /// Connect to the STOMP server using the configured parameters
     ///
@@ -170,7 +221,7 @@ impl<
     /// to the STOMP server. If successful, it returns a ClientTransport that can
     /// be used to send and receive messages.
     pub async fn connect(self) -> Result<ClientTransport> {
-        let connector = self.__build();
+        let connector: Connector<S, V> = self.__build();
         connector.connect().await
     }
 
@@ -392,8 +443,16 @@ pub struct Subscriber<S: Into<String>, I: Into<String>> {
 
 /// Implementation of the builder subscribe method to allow direct subscription creation
 #[allow(non_camel_case_types)]
-impl<S: Into<String>, I: Into<String>, __headers: ::typed_builder::Optional<Vec<(String, String)>>>
-    SubscriberBuilder<S, I, ((S,), (I,), __headers)>
+impl<S: Into<String>, I: Into<String>, __headers> SubscriberBuilder<S, I, ((S,), (I,), __headers)>
+where
+    Subscriber<S, I>: for<'__typed_builder_lifetime_for_default> ::typed_builder::NextFieldDefault<
+            (
+                &'__typed_builder_lifetime_for_default S,
+                &'__typed_builder_lifetime_for_default I,
+                __headers,
+            ),
+            Output = Vec<(String, String)>,
+        >,
 {
     /// Creates a SUBSCRIBE message using the configured parameters
     ///
