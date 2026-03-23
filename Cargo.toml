@@ -24,7 +24,7 @@ anyhow = "1.0"
 futures = "0.3"
 tokio = { version = "1", features = ["net"] }
 tokio-util = { version = "0.7", features = ["codec"] }
-winnow = "0.7"
+winnow = "1.0"
 typed-builder = "=0.23.2"
 tokio-rustls = "0.26.4"
 webpki-roots = "1.0.6"
