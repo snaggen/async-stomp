@@ -24,6 +24,7 @@ The library is built on top of Tokio, leveraging its async I/O capabilities to p
   - Acknowledgments (auto, client, client-individual modes)
   - Transactions
 - TLS/SSL support for secure connections
+- Heart-beating, in both directions, to keep idle connections alive
 - Custom headers support for advanced configurations
 - Error handling with detailed error information
 
@@ -33,7 +34,7 @@ Add this to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-async-stomp = "0.6"
+async-stomp = "0.7"
 ```
 
 ## Usage Guide
@@ -66,6 +67,93 @@ async fn main() -> Result<(), anyhow::Error> {
         .connect()
         .await?;
         
+    Ok(())
+}
+```
+
+### Heart-beating
+
+An idle STOMP connection carries no traffic, and brokers cannot tell it apart from
+one whose client has died. Heart-beating fixes that by sending a single newline
+whenever nothing else has been sent for a while.
+
+It is off by default. Enable it with the two intervals in milliseconds: the
+shortest interval you can guarantee between your own transmissions, and the
+interval you would like the server to transmit at. Zero disables that direction.
+
+```rust
+use async_stomp::client::Connector;
+
+#[tokio::main]
+async fn main() -> Result<(), anyhow::Error> {
+    let conn = Connector::builder()
+        .server("localhost:61613")
+        .virtualhost("/")
+        .heartbeat(20_000, 20_000)
+        .connect()
+        .await?;
+
+    // What the two sides actually agreed on, as (outgoing, incoming)
+    println!("{:?}", conn.heartbeat());
+
+    Ok(())
+}
+```
+
+Heart-beats are sent from a background task, so an idle connection stays alive
+without the application having to poll it. No heart-beat is sent if an ordinary
+frame went out within the interval.
+
+That task is the only thing heart-beating adds: a connection that does not beat
+writes straight to the socket as before, with no task and no channel in the way.
+A beating connection hands its write half to the task, and `send` then waits for
+the write to reach the socket so that it still reports the real result. The one
+visible difference is that such a connection does not batch, so `feed` behaves
+like `send` on it.
+
+Once an incoming interval has been negotiated, a server that goes quiet for more
+than twice that interval makes the stream yield an error.
+
+Both sides have to agree: each direction is only active if one side offers to
+send and the other wants to receive, and they then settle on the slower of the
+two intervals. A server that answers `heart-beat:0,0` gets no heart-beats no
+matter what you asked for.
+
+**Brokers with an idle timeout.** Apache Artemis closes a connection that asked
+for no heart-beating after its connection TTL, 60 seconds by default. It derives
+the TTL from the first of the two values, so setting it is what keeps a
+long-lived, low-traffic subscription connected. Measured against Artemis 2.x: an
+idle connection without heart-beats is dropped after about 61 seconds, and with
+`heartbeat(2_000, 2_000)` it survives indefinitely.
+
+#### Driving the heart-beats yourself
+
+If you would rather decide when to beat, turn the automatic handling off. The
+`heart-beat` header is still sent and still negotiated, so you can read what the
+two sides agreed on, but nothing is beaten for you and a silent server is not
+reported:
+
+```rust
+use async_stomp::client::Connector;
+use std::time::Duration;
+
+#[tokio::main]
+async fn main() -> Result<(), anyhow::Error> {
+    let mut conn = Connector::builder()
+        .server("localhost:61613")
+        .virtualhost("/")
+        .heartbeat(20_000, 20_000)
+        .auto_heartbeat(false)
+        .connect()
+        .await?;
+
+    let (outgoing, _incoming) = conn.heartbeat();
+    if let Some(interval) = outgoing {
+        // Beat on your own schedule
+        tokio::time::sleep(interval / 2).await;
+        conn.send_heartbeat().await?;
+    }
+
     Ok(())
 }
 ```

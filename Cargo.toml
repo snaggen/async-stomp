@@ -1,6 +1,6 @@
 [package]
 name = "async-stomp"
-version = "0.6.3"
+version = "0.7.0"
 description = "An asynchronous streaming STOMP client"
 authors = [
     "Mattias Eriksson <snaggen@mayam.com>",
@@ -22,7 +22,7 @@ bytes = "1.12.1"
 custom_debug_derive = "0.6.2"
 anyhow = "1.0"
 futures = "0.3"
-tokio = { version = "1", features = ["net"] }
+tokio = { version = "1", features = ["io-util", "net", "rt", "time"] }
 tokio-util = { version = "0.7", features = ["codec"] }
 winnow = "1.0"
 tokio-rustls = "0.26.4"

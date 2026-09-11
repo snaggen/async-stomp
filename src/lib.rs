@@ -1,15 +1,43 @@
-//! tokio-stomp - A library for asynchronous streaming of STOMP messages
+//! An async [STOMP 1.2](https://stomp.github.io/stomp-specification-1.2.html)
+//! client, built on the tokio stack.
 //!
-//! This library provides an async Rust implementation of the STOMP (Simple/Streaming Text Oriented Messaging Protocol),
-//! built on the tokio stack. It allows for creating STOMP clients that can connect to message brokers,
-//! subscribe to destinations, send messages, and receive messages asynchronously.
+//! [`client::Connector`] establishes a connection and hands back a
+//! [`client::ClientTransport`], which is a `Sink` of [`ToServer`] messages and
+//! a `Stream` of [`FromServer`] ones. [`client::Subscriber`] builds the
+//! SUBSCRIBE message.
 //!
-//! The primary types exposed by this library are:
-//! - `client::Connector` - For establishing connections to STOMP servers
-//! - `client::Subscriber` - For creating subscription messages
-//! - `Message<T>` - For representing STOMP protocol messages
-//! - `ToServer` - Enum of all message types that can be sent to a server
-//! - `FromServer` - Enum of all message types that can be received from a server
+//! ```rust,no_run
+//! use async_stomp::client::{Connector, Subscriber};
+//! use async_stomp::FromServer;
+//! use futures::prelude::*;
+//!
+//! # #[tokio::main]
+//! # async fn main() -> Result<(), anyhow::Error> {
+//! let mut conn = Connector::builder()
+//!     .server("127.0.0.1:61613")
+//!     .virtualhost("/")
+//!     .connect()
+//!     .await?;
+//!
+//! let subscribe = Subscriber::builder()
+//!     .destination("queue.test")
+//!     .id("sub-1")
+//!     .subscribe();
+//! conn.send(subscribe).await?;
+//!
+//! while let Some(msg) = conn.next().await {
+//!     if let FromServer::Message { body, .. } = msg?.content {
+//!         println!("{}", String::from_utf8_lossy(&body.unwrap_or_default()));
+//!     }
+//! }
+//! # Ok(())
+//! # }
+//! ```
+//!
+//! Heart-beating is off by default. Turning it on keeps an idle connection
+//! alive against brokers that close quiet sessions, see [`client::Connector`].
+
+#![warn(missing_docs)]
 
 use custom_debug_derive::Debug as CustomDebug;
 use frame::Frame;
@@ -20,18 +48,31 @@ mod frame;
 /// Type alias for library results that use anyhow::Error
 pub(crate) type Result<T> = std::result::Result<T, anyhow::Error>;
 
-/// A representation of a STOMP frame
+/// A STOMP frame: its content, plus any headers the content type has no field
+/// for
 ///
-/// This struct holds the content of a STOMP message (which can be either
-/// a message sent to the server or received from the server) along with
-/// any extra headers that were present in the frame but not required by
-/// the specific message type.
+/// `T` is [`ToServer`] or [`FromServer`]. Since a bare [`ToServer`] converts
+/// into a `Message` with no extra headers, `.into()` is usually all you need.
+///
+/// ```rust
+/// use async_stomp::{Message, ToServer};
+///
+/// let mut msg: Message<ToServer> = ToServer::Send {
+///     destination: "queue.test".into(),
+///     transaction: None,
+///     headers: None,
+///     body: Some(b"hello".to_vec()),
+/// }
+/// .into();
+///
+/// // Headers the variant does not cover go here, as raw bytes
+/// msg.extra_headers.push((b"priority".to_vec(), b"9".to_vec()));
+/// ```
 #[derive(Debug)]
 pub struct Message<T> {
-    /// The message content, which is either a ToServer or FromServer enum
+    /// The message itself, a [`ToServer`] or [`FromServer`] variant
     pub content: T,
-    /// Headers present in the frame which were not required by the content type
-    /// Stored as raw bytes to avoid unnecessary conversions
+    /// Headers the content type has no field for, as raw bytes
     pub extra_headers: Vec<(Vec<u8>, Vec<u8>)>,
 }
 
@@ -47,13 +88,25 @@ fn pretty_bytes(b: &Option<Vec<u8>>, f: &mut std::fmt::Formatter) -> std::fmt::R
     }
 }
 
-/// A STOMP message sent from the server
+/// A message received from the server
 ///
-/// This enum represents all possible message types that can be received from
-/// a STOMP server according to the STOMP 1.2 specification.
+/// Reached through the `content` field of a [`Message`] yielded by the
+/// transport's `Stream`.
 ///
-/// See the [STOMP 1.2 Specification](https://stomp.github.io/stomp-specification-1.2.html)
-/// for more detailed information about each message type.
+/// ```rust
+/// use async_stomp::FromServer;
+///
+/// fn handle(content: FromServer) {
+///     match content {
+///         FromServer::Message { destination, body, .. } => {
+///             println!("{destination}: {:?}", body.as_deref().map(String::from_utf8_lossy));
+///         }
+///         FromServer::Receipt { receipt_id } => println!("receipt {receipt_id}"),
+///         FromServer::Error { message, .. } => eprintln!("error {message:?}"),
+///         _ => {}
+///     }
+/// }
+/// ```
 #[derive(CustomDebug, Clone)]
 pub enum FromServer {
     /// Connection established acknowledgment
@@ -133,13 +186,31 @@ impl Message<FromServer> {
     }
 }
 
-/// A STOMP message sent by the client
+/// A message to send to the server
 ///
-/// This enum represents all possible message types that can be sent to
-/// a STOMP server according to the STOMP 1.2 specification.
+/// Convert one into a [`Message`] with `.into()` and hand it to the transport's
+/// `Sink`. CONNECT is not among the variants you need: [`client::Connector`]
+/// sends it during the handshake.
 ///
-/// See the [STOMP 1.2 Specification](https://stomp.github.io/stomp-specification-1.2.html)
-/// for more detailed information about each message type.
+/// ```rust
+/// use async_stomp::{Message, ToServer};
+///
+/// // Publish to a destination
+/// let publish: Message<ToServer> = ToServer::Send {
+///     destination: "queue.test".into(),
+///     transaction: None,
+///     headers: None,
+///     body: Some(b"hello".to_vec()),
+/// }
+/// .into();
+///
+/// // Acknowledge a message you have finished processing
+/// let ack: Message<ToServer> = ToServer::Ack {
+///     id: "message-123".into(),
+///     transaction: None,
+/// }
+/// .into();
+/// ```
 #[derive(Debug, Clone)]
 pub enum ToServer {
     /// Connection request message
@@ -254,9 +325,21 @@ pub enum ToServer {
     },
 }
 
-/// Acknowledgment modes for STOMP subscriptions
+/// How messages from a subscription are acknowledged
 ///
-/// Controls how messages should be acknowledged when received through a subscription.
+/// Set on [`ToServer::Subscribe`]; leaving it at `None` means [`AckMode::Auto`].
+///
+/// ```rust
+/// use async_stomp::{AckMode, Message, ToServer};
+///
+/// // Each message has to be acknowledged individually before it counts as done
+/// let subscribe: Message<ToServer> = ToServer::Subscribe {
+///     destination: "queue.test".into(),
+///     id: "sub-1".into(),
+///     ack: Some(AckMode::ClientIndividual),
+/// }
+/// .into();
+/// ```
 #[derive(Debug, Clone, Copy)]
 pub enum AckMode {
     /// Auto acknowledgment (the default if not specified)
@@ -301,14 +384,8 @@ impl Message<ToServer> {
     }
 }
 
-/// Implement From<ToServer> for Message<ToServer> to allow easy conversion
-///
-/// This allows ToServer enum variants to be easily converted to a Message
-/// with empty extra_headers, which is a common need when sending messages.
+/// Wraps a [`ToServer`] in a [`Message`] with no extra headers
 impl From<ToServer> for Message<ToServer> {
-    /// Convert a ToServer enum into a Message<ToServer>
-    ///
-    /// This creates a Message with the given content and empty extra_headers.
     fn from(content: ToServer) -> Message<ToServer> {
         Message {
             content,

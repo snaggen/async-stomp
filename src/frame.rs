@@ -572,10 +572,11 @@ fn opt_str_to_bytes(s: &Option<String>) -> Option<Cow<'_, [u8]>> {
 
 /// Parse a heartbeat header value into a (u32, u32) tuple
 ///
-/// This helper function parses the heart-beat header value which is
-/// in the format "cx,cy" where cx is the client's heartbeat interval
-/// and cy is the server's heartbeat interval.
-fn parse_heartbeat(hb: &str) -> Result<(u32, u32)> {
+/// The `heart-beat` header has the format "x,y", where x is the shortest
+/// interval in milliseconds the sender can guarantee between its own
+/// transmissions, and y is the interval it would like to receive at. Zero
+/// disables that direction.
+pub(crate) fn parse_heartbeat(hb: &str) -> Result<(u32, u32)> {
     let mut split = hb.splitn(2, ',');
     let left = split.next().ok_or_else(|| anyhow!("Bad heartbeat"))?;
     let right = split.next().ok_or_else(|| anyhow!("Bad heartbeat"))?;
@@ -1261,5 +1262,23 @@ subscription:sub-123\n\ntest message body\x00";
             panic!("Expected a MESSAGE frame");
         };
         assert_eq!(ack, None);
+    }
+
+    /// Tests parsing of the heart-beat header value
+    ///
+    /// The header holds two comma separated millisecond values. Anything else
+    /// is a protocol violation, and guessing at it would leave the two sides
+    /// disagreeing about how often to beat.
+    ///
+    /// If this test fails, a malformed header either passes unnoticed or a
+    /// valid one is rejected, in both cases breaking heart-beating.
+    #[test]
+    fn parse_heartbeat_header() {
+        assert_eq!(parse_heartbeat("0,0").expect("Zeroes"), (0, 0));
+        assert_eq!(parse_heartbeat("500,10000").expect("Values"), (500, 10000));
+
+        for bad in ["", "1", "abc", "1,", ",1", "1,2,3", "-1,1"] {
+            assert!(parse_heartbeat(bad).is_err(), "Should reject {bad:?}");
+        }
     }
 }

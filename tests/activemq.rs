@@ -26,8 +26,8 @@
 //! cargo test --test activemq -- --ignored
 //! ```
 //!
-//! ActiveMQ Classic rather than Artemis, since Artemis expects heart-beating
-//! that this branch does not implement yet.
+//! ActiveMQ Classic rather than Artemis, since Artemis drops a connection that
+//! does not heart-beat, and these tests leave heart-beating off.
 
 use async_stomp::client::{ClientTransport, Connector, Subscriber, disconnect};
 use async_stomp::{AckMode, FromServer, Message, ToServer};
