@@ -278,7 +278,8 @@ async fn receives_frame_after_heartbeats() {
 /// Tests that a server which stops beating is detected
 ///
 /// Having negotiated an incoming interval, silence past that interval means the
-/// connection is dead even though the socket is still open.
+/// connection is dead even though the socket is still open. Here the client
+/// only listens, so it reads the socket itself.
 ///
 /// If this test fails, a client can wait forever on a connection to a server
 /// that is gone.
@@ -297,10 +298,62 @@ async fn detects_silent_server() {
     let mut conn = Connector::builder()
         .server(addr)
         .virtualhost("/")
+        // Offering nothing means we never beat, and only listen
         .heartbeat(0, 250)
         .connect()
         .await
         .expect("Connect");
+    assert_eq!(conn.heartbeat().0, None, "We should not be beating here");
+
+    let result = tokio::time::timeout(Duration::from_secs(2), conn.next())
+        .await
+        .expect("The stream should fail rather than hang");
+
+    assert!(
+        matches!(result, Some(Err(_))),
+        "Expected an error, got {result:?}"
+    );
+
+    server.abort();
+}
+
+/// Tests that a silent server is detected while we are beating ourselves too
+///
+/// Beating moves the write half to a background task and the read half to a
+/// reader of its own, so the liveness check reads its timestamp from somewhere
+/// else than in the listen-only case above. Both directions being active is
+/// also the ordinary configuration.
+///
+/// If this test fails, the connections most likely to be long lived and idle,
+/// exactly the ones heart-beating exists for, are the ones that never notice a
+/// server going away.
+#[tokio::test]
+async fn detects_silent_server_while_beating() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("Bind");
+    let addr = listener.local_addr().expect("Local address").to_string();
+
+    let server = tokio::spawn(async move {
+        let (mut sock, _) = accept_handshake(&listener, "250,250").await;
+        // Take the client's heartbeats but send nothing back
+        let mut sink = [0u8; 64];
+        let _ = tokio::time::timeout(Duration::from_secs(3), async {
+            while sock.read(&mut sink).await.is_ok_and(|read| read > 0) {}
+        })
+        .await;
+    });
+
+    let mut conn = Connector::builder()
+        .server(addr)
+        .virtualhost("/")
+        .heartbeat(250, 250)
+        .connect()
+        .await
+        .expect("Connect");
+    assert_eq!(
+        conn.heartbeat().0,
+        Some(Duration::from_millis(250)),
+        "We should be beating here"
+    );
 
     let result = tokio::time::timeout(Duration::from_secs(2), conn.next())
         .await
