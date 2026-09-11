@@ -25,10 +25,9 @@ futures = "0.3"
 tokio = { version = "1", features = ["net"] }
 tokio-util = { version = "0.7", features = ["codec"] }
 winnow = "1.0"
-typed-builder = "=0.23.2"
 tokio-rustls = "0.26.4"
 webpki-roots = "1.0.9"
 rustls = "0.23"
 
 [dev-dependencies]
-tokio = { version = "1", features = ["time", "macros", "rt-multi-thread"] }
+tokio = { version = "1", features = ["time", "macros", "rt-multi-thread", "io-util"] }

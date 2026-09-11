@@ -14,7 +14,6 @@ use tokio::net::TcpStream;
 use tokio_rustls::TlsConnector;
 use tokio_rustls::client::TlsStream;
 use tokio_util::codec::{Decoder, Encoder, Framed};
-use typed_builder::TypedBuilder;
 use winnow::Partial;
 use winnow::error::ErrMode;
 use winnow::stream::Offset;
@@ -114,124 +113,120 @@ impl fmt::Debug for TransportStream {
 ///     .await;
 ///}
 /// ```
-#[derive(TypedBuilder)]
-#[builder(build_method(vis="", name=__build))]
-pub struct Connector<S: tokio::net::ToSocketAddrs + Clone, V: Into<String> + Clone> {
-    /// The address to the stomp server
+pub struct Connector<S = Unset, V = Unset> {
     server: S,
-    /// Virtualhost, if no specific virtualhost is desired, it is recommended
-    /// to set this to the same as the host name that the socket
     virtualhost: V,
-    /// Username to use for optional authentication to the server
-    #[builder(default, setter(strip_option))]
     login: Option<String>,
-    /// Passcode to use for optional authentication to the server
-    #[builder(default, setter(strip_option))]
     passcode: Option<String>,
-    /// Custom headers to be sent to the server
-    #[builder(default)]
     headers: Vec<(String, String)>,
-    /// Whether to use TLS for this connection
-    #[builder(default = false)]
     use_tls: bool,
-    /// Optional server name to verify in TLS certificate (defaults to hostname from server if not specified)
-    #[builder(default, setter(strip_option))]
     tls_server_name: Option<String>,
 }
 
-/// Implementation of the builder connect method to allow the builder to directly connect
-#[allow(non_camel_case_types)]
-impl<
-    S: tokio::net::ToSocketAddrs + Clone,
-    V: Into<String> + Clone,
-    __login,
-    __passcode,
-    __headers,
-    __use_tls,
-    __tls_server_name,
->
-    ConnectorBuilder<
-        S,
-        V,
-        (
-            (S,),
-            (V,),
-            __login,
-            __passcode,
-            __headers,
-            __use_tls,
-            __tls_server_name,
-        ),
-    >
-where
-    Connector<S, V>: for<'__typed_builder_lifetime_for_default> ::typed_builder::NextFieldDefault<
-            (
-                &'__typed_builder_lifetime_for_default S,
-                &'__typed_builder_lifetime_for_default V,
-                __login,
-            ),
-            Output = Option<String>,
-        >,
-    Connector<S, V>: for<'__typed_builder_lifetime_for_default> ::typed_builder::NextFieldDefault<
-            (
-                &'__typed_builder_lifetime_for_default S,
-                &'__typed_builder_lifetime_for_default V,
-                &'__typed_builder_lifetime_for_default Option<String>,
-                __passcode,
-            ),
-            Output = Option<String>,
-        >,
-    Connector<S, V>: for<'__typed_builder_lifetime_for_default> ::typed_builder::NextFieldDefault<
-            (
-                &'__typed_builder_lifetime_for_default S,
-                &'__typed_builder_lifetime_for_default V,
-                &'__typed_builder_lifetime_for_default Option<String>,
-                &'__typed_builder_lifetime_for_default Option<String>,
-                __headers,
-            ),
-            Output = Vec<(String, String)>,
-        >,
-    Connector<S, V>: for<'__typed_builder_lifetime_for_default> ::typed_builder::NextFieldDefault<
-            (
-                &'__typed_builder_lifetime_for_default S,
-                &'__typed_builder_lifetime_for_default V,
-                &'__typed_builder_lifetime_for_default Option<String>,
-                &'__typed_builder_lifetime_for_default Option<String>,
-                &'__typed_builder_lifetime_for_default Vec<(String, String)>,
-                __use_tls,
-            ),
-            Output = bool,
-        >,
-    Connector<S, V>: for<'__typed_builder_lifetime_for_default> ::typed_builder::NextFieldDefault<
-            (
-                &'__typed_builder_lifetime_for_default S,
-                &'__typed_builder_lifetime_for_default V,
-                &'__typed_builder_lifetime_for_default Option<String>,
-                &'__typed_builder_lifetime_for_default Option<String>,
-                &'__typed_builder_lifetime_for_default Vec<(String, String)>,
-                &'__typed_builder_lifetime_for_default bool,
-                __tls_server_name,
-            ),
-            Output = Option<String>,
-        >,
-{
-    /// Connect to the STOMP server using the configured parameters
+/// A required builder field that has not been set yet
+pub struct Unset;
+
+impl Connector<Unset, Unset> {
+    /// Start configuring a connection
     ///
-    /// This method finalizes the builder and attempts to establish a connection
-    /// to the STOMP server. If successful, it returns a ClientTransport that can
-    /// be used to send and receive messages.
-    pub async fn connect(self) -> Result<ClientTransport> {
-        let connector: Connector<S, V> = self.__build();
-        connector.connect().await
+    /// `server` and `virtualhost` are required; everything else has a default.
+    /// Finish with [`connect`](Connector::connect) to open the connection, or
+    /// with [`msg`](Connector::msg) for just the CONNECT frame.
+    ///
+    /// ```rust
+    /// use async_stomp::ToServer;
+    /// use async_stomp::client::Connector;
+    ///
+    /// let msg = Connector::builder()
+    ///     .server("stomp.example.com:61613")
+    ///     .virtualhost("stomp.example.com")
+    ///     .login("guest".to_string())
+    ///     .msg();
+    ///
+    /// let ToServer::Connect { host, login, .. } = msg.content else {
+    ///     panic!("expected a CONNECT");
+    /// };
+    /// assert_eq!(host, "stomp.example.com");
+    /// assert_eq!(login.as_deref(), Some("guest"));
+    /// ```
+    ///
+    /// Leaving out a required field is a compile error:
+    ///
+    /// ```compile_fail
+    /// # use async_stomp::client::Connector;
+    /// // No virtualhost, so there is nothing to connect with
+    /// let conn = Connector::builder().server("stomp.example.com:61613").connect();
+    /// ```
+    pub fn builder() -> Connector<Unset, Unset> {
+        Connector {
+            server: Unset,
+            virtualhost: Unset,
+            login: None,
+            passcode: None,
+            headers: Vec::new(),
+            use_tls: false,
+            tls_server_name: None,
+        }
+    }
+}
+
+impl<S, V> Connector<S, V> {
+    /// Address of the STOMP server, for instance `"localhost:61613"`
+    pub fn server<T: tokio::net::ToSocketAddrs + Clone>(self, server: T) -> Connector<T, V> {
+        Connector {
+            server,
+            virtualhost: self.virtualhost,
+            login: self.login,
+            passcode: self.passcode,
+            headers: self.headers,
+            use_tls: self.use_tls,
+            tls_server_name: self.tls_server_name,
+        }
     }
 
-    /// Create a Message for connection without actually connecting
-    ///
-    /// This can be used when you want to handle the connection process manually
-    /// or need access to the raw connection message.
-    pub fn msg(self) -> Message<ToServer> {
-        let connector = self.__build();
-        connector.msg()
+    /// Virtual host to connect to, sent as the `host` header. When the server
+    /// has no virtual hosts, use the same host name as `server`.
+    pub fn virtualhost<T: Into<String> + Clone>(self, virtualhost: T) -> Connector<S, T> {
+        Connector {
+            server: self.server,
+            virtualhost,
+            login: self.login,
+            passcode: self.passcode,
+            headers: self.headers,
+            use_tls: self.use_tls,
+            tls_server_name: self.tls_server_name,
+        }
+    }
+
+    /// Username, if the server requires authentication
+    pub fn login(mut self, login: String) -> Self {
+        self.login = Some(login);
+        self
+    }
+
+    /// Password, if the server requires authentication
+    pub fn passcode(mut self, passcode: String) -> Self {
+        self.passcode = Some(passcode);
+        self
+    }
+
+    /// Extra headers for the CONNECT frame, such as a broker specific client id
+    pub fn headers(mut self, headers: Vec<(String, String)>) -> Self {
+        self.headers = headers;
+        self
+    }
+
+    /// Connect over TLS. Defaults to `false`.
+    pub fn use_tls(mut self, use_tls: bool) -> Self {
+        self.use_tls = use_tls;
+        self
+    }
+
+    /// Host name to verify the TLS certificate against. Defaults to the host
+    /// from `server`.
+    pub fn tls_server_name(mut self, tls_server_name: String) -> Self {
+        self.tls_server_name = Some(tls_server_name);
+        self
     }
 }
 
@@ -429,38 +424,74 @@ async fn client_handshake(
 ///   Ok(())
 /// }
 /// ```
-#[derive(TypedBuilder)]
-#[builder(build_method(vis="", name=__build))]
-pub struct Subscriber<S: Into<String>, I: Into<String>> {
-    /// The destination to subscribe to (e.g., queue or topic name)
+pub struct Subscriber<S = Unset, I = Unset> {
     destination: S,
-    /// The subscription ID used to identify this subscription
     id: I,
-    /// Custom headers to be included in the SUBSCRIBE frame
-    #[builder(default)]
     headers: Vec<(String, String)>,
 }
 
-/// Implementation of the builder subscribe method to allow direct subscription creation
-#[allow(non_camel_case_types)]
-impl<S: Into<String>, I: Into<String>, __headers> SubscriberBuilder<S, I, ((S,), (I,), __headers)>
-where
-    Subscriber<S, I>: for<'__typed_builder_lifetime_for_default> ::typed_builder::NextFieldDefault<
-            (
-                &'__typed_builder_lifetime_for_default S,
-                &'__typed_builder_lifetime_for_default I,
-                __headers,
-            ),
-            Output = Vec<(String, String)>,
-        >,
-{
-    /// Creates a SUBSCRIBE message using the configured parameters
+impl Subscriber<Unset, Unset> {
+    /// Start configuring a subscription
     ///
-    /// This method finalizes the builder and returns a STOMP SUBSCRIBE message
-    /// that can be sent to a server to create a subscription.
-    pub fn subscribe(self) -> Message<ToServer> {
-        let subscriber = self.__build();
-        subscriber.subscribe()
+    /// `destination` and `id` are required; the headers are optional.
+    ///
+    /// ```rust
+    /// use async_stomp::ToServer;
+    /// use async_stomp::client::Subscriber;
+    ///
+    /// let msg = Subscriber::builder()
+    ///     .destination("queue.test")
+    ///     .id("sub-1")
+    ///     .subscribe();
+    ///
+    /// let ToServer::Subscribe { destination, id, .. } = msg.content else {
+    ///     panic!("expected a SUBSCRIBE");
+    /// };
+    /// assert_eq!(destination, "queue.test");
+    /// assert_eq!(id, "sub-1");
+    /// ```
+    ///
+    /// Leaving out a required field is a compile error:
+    ///
+    /// ```compile_fail
+    /// # use async_stomp::client::Subscriber;
+    /// // No id, so there is nothing to subscribe with
+    /// let msg = Subscriber::builder().destination("queue.test").subscribe();
+    /// ```
+    pub fn builder() -> Subscriber<Unset, Unset> {
+        Subscriber {
+            destination: Unset,
+            id: Unset,
+            headers: Vec::new(),
+        }
+    }
+}
+
+impl<S, I> Subscriber<S, I> {
+    /// The queue or topic to subscribe to
+    pub fn destination<T: Into<String>>(self, destination: T) -> Subscriber<T, I> {
+        Subscriber {
+            destination,
+            id: self.id,
+            headers: self.headers,
+        }
+    }
+
+    /// Identifier for this subscription, chosen by you. Incoming messages
+    /// carry it, and [`ToServer::Unsubscribe`] refers back to it.
+    pub fn id<T: Into<String>>(self, id: T) -> Subscriber<S, T> {
+        Subscriber {
+            destination: self.destination,
+            id,
+            headers: self.headers,
+        }
+    }
+
+    /// Extra headers for the SUBSCRIBE frame, such as `ack` or a broker
+    /// specific subscription name
+    pub fn headers(mut self, headers: Vec<(String, String)>) -> Self {
+        self.headers = headers;
+        self
     }
 }
 
@@ -552,6 +583,8 @@ mod tests {
         client::{Connector, Subscriber},
     };
     use bytes::BytesMut;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
 
     /// Tests the creation of a STOMP subscription message
     ///
@@ -633,5 +666,117 @@ mod tests {
         connect_msg.to_frame().serialize(&mut actual_buffer);
 
         assert_eq!(expected_buffer, actual_buffer);
+    }
+
+    /// Tests that the optional builder fields are left out when not set
+    ///
+    /// Everything but the server and the virtualhost is optional, and an
+    /// option that was never asked for must not turn up in the frame.
+    ///
+    /// If this test fails, the client sends credentials or headers the caller
+    /// never supplied, which brokers may well reject.
+    #[test]
+    fn connection_message_defaults() {
+        let connect_msg = Connector::builder()
+            .server("stomp.example.com")
+            .virtualhost("virtual.stomp.example.com")
+            .msg();
+
+        let mut buffer = BytesMut::new();
+        connect_msg.to_frame().serialize(&mut buffer);
+        let frame = String::from_utf8_lossy(&buffer);
+
+        assert!(!frame.contains("login:"), "{frame}");
+        assert!(!frame.contains("passcode:"), "{frame}");
+        assert!(frame.contains("host:virtual.stomp.example.com"), "{frame}");
+    }
+
+    /// Tests that setting a field twice keeps the value set last
+    ///
+    /// The builder lets any field be set again, so the later call has to win
+    /// rather than the value being merged or the first one kept.
+    ///
+    /// If this test fails, a connector assembled in steps, where a later step
+    /// overrides an earlier default, connects with the wrong values.
+    #[test]
+    fn later_setter_calls_win() {
+        let connect_msg = Connector::builder()
+            .server("first.example.com")
+            .server("second.example.com")
+            .virtualhost("first.example.com")
+            .virtualhost("second.example.com")
+            .login("first".to_string())
+            .login("second".to_string())
+            .msg();
+
+        let mut buffer = BytesMut::new();
+        connect_msg.to_frame().serialize(&mut buffer);
+        let frame = String::from_utf8_lossy(&buffer);
+
+        assert!(frame.contains("host:second.example.com"), "{frame}");
+        assert!(frame.contains("login:second"), "{frame}");
+    }
+
+    /// Tests that the handshake puts the same CONNECT frame on the wire that
+    /// `msg` returns
+    ///
+    /// The handshake and `msg` build that frame separately, so the frame a
+    /// caller inspects beforehand is only the one actually sent for as long as
+    /// the two agree.
+    ///
+    /// If this test fails, the two have drifted apart and connections are made
+    /// with headers other than the ones `msg` reports.
+    #[tokio::test]
+    async fn handshake_sends_the_connect_message() {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("Bind the test server");
+        let addr = listener.local_addr().expect("Test server address");
+
+        // A server that accepts one connection, keeps whatever frame it is
+        // sent, and answers it with CONNECTED
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.expect("Accept a connection");
+
+            // A frame ends with a null byte, so read until one turns up rather
+            // than trusting the whole frame to arrive in a single read
+            let mut received = Vec::new();
+            while !received.ends_with(b"\0") {
+                let mut chunk = [0u8; 256];
+                let len = socket
+                    .read(&mut chunk)
+                    .await
+                    .expect("Read the CONNECT frame");
+                assert!(len > 0, "The client closed before sending a whole frame");
+                received.extend_from_slice(&chunk[..len]);
+            }
+
+            socket
+                .write_all(b"CONNECTED\nversion:1.2\n\n\0")
+                .await
+                .expect("Reply CONNECTED");
+            received
+        });
+
+        // Two identically configured connectors: one to connect with, one to
+        // read the expected frame off of
+        let connector = || {
+            Connector::builder()
+                .server(addr.to_string())
+                .virtualhost("virtual.stomp.example.com")
+                .login("guest_login".to_string())
+                .passcode("guest_passcode".to_string())
+                .headers(vec![("client-id".to_string(), "ClientTest".to_string())])
+        };
+
+        connector()
+            .connect()
+            .await
+            .expect("Connect to the test server");
+
+        let mut expected = BytesMut::new();
+        connector().msg().to_frame().serialize(&mut expected);
+
+        assert_eq!(server.await.expect("The test server"), expected.to_vec());
     }
 }
