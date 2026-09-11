@@ -21,3 +21,6 @@ target/
 
 # VSCode
 .vscode
+
+# Local Claude Code instructions
+CLAUDE.local.md
