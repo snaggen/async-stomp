@@ -68,15 +68,17 @@ impl<'a> Frame<'a> {
     /// - Null byte terminator
     pub(crate) fn serialize(&self, buffer: &mut BytesMut) {
         /// Helper function to write bytes with proper escaping of special characters
-        fn write_escaped(b: u8, buffer: &mut BytesMut) {
+        fn write_escaped(b: u8, buffer: &mut BytesMut, escape: bool) {
             match b {
-                b'\r' => buffer.put_slice(b"\\r"),  // Carriage return
-                b'\n' => buffer.put_slice(b"\\n"),  // Line feed
-                b':' => buffer.put_slice(b"\\c"),   // Colon
-                b'\\' => buffer.put_slice(b"\\\\"), // Backslash
-                b => buffer.put_u8(b),              // Regular character
+                b'\r' if escape => buffer.put_slice(b"\\r"), // Carriage return
+                b'\n' if escape => buffer.put_slice(b"\\n"), // Line feed
+                b':' if escape => buffer.put_slice(b"\\c"),  // Colon
+                b'\\' if escape => buffer.put_slice(b"\\\\"), // Backslash
+                b => buffer.put_u8(b),                       // Regular character
             }
         }
+
+        let escape = headers_are_escaped(self.command);
 
         // Calculate required capacity to avoid reallocations
         let requires = self.command.len()
@@ -100,13 +102,13 @@ impl<'a> Frame<'a> {
         self.headers.iter().for_each(|&(key, ref val)| {
             // Write key with proper escaping
             for byte in key {
-                write_escaped(*byte, buffer);
+                write_escaped(*byte, buffer, escape);
             }
             buffer.put_u8(b':');
 
             // Write value with proper escaping
             for byte in val.iter() {
-                write_escaped(*byte, buffer);
+                write_escaped(*byte, buffer, escape);
             }
             buffer.put_u8(b'\n');
         });
@@ -229,6 +231,18 @@ pub fn parse_header<'a>(input: &mut Partial<&'a [u8]>) -> ModalResult<Header<'a>
     .parse_next(input)
 }
 
+/// Whether the headers of a frame with this command carry escape sequences
+///
+/// CONNECT and CONNECTED are the two exceptions in the spec, kept unescaped for
+/// backward compatibility with STOMP 1.0. A STOMP frame counts as a CONNECT,
+/// since a server has to handle the two alike.
+fn headers_are_escaped(command: &[u8]) -> bool {
+    !matches!(
+        command,
+        b"CONNECT" | b"connect" | b"CONNECTED" | b"connected" | b"STOMP" | b"stomp"
+    )
+}
+
 /// Unescape a header value according to STOMP spec
 ///
 /// Converts escaped sequences back to their original characters:
@@ -277,6 +291,27 @@ fn fetch_header<'a>(headers: &'a [(&'a [u8], Cow<'a, [u8]>)], key: &'a str) -> O
         }
     }
     None
+}
+
+/// Fetch a header value by key, without unescaping it
+///
+/// For the CONNECT and CONNECTED frames, whose headers never carry escape
+/// sequences, so that a literal backslash survives as itself.
+fn fetch_raw_header<'a>(headers: &'a [(&'a [u8], Cow<'a, [u8]>)], key: &'a str) -> Option<String> {
+    let kk = key.as_bytes();
+    for &(k, ref v) in headers {
+        if k == kk {
+            return String::from_utf8(v.to_vec()).ok();
+        }
+    }
+    None
+}
+
+/// Fetch a required header value by key, without unescaping it
+///
+/// The counterpart of [`expect_header`] for CONNECT and CONNECTED.
+fn expect_raw_header<'a>(headers: &'a [(&'a [u8], Cow<'a, [u8]>)], key: &'a str) -> Result<String> {
+    fetch_raw_header(headers, key).ok_or_else(|| anyhow!("Expected header '{}' missing", key))
 }
 
 /// Convert all headers to a collection of (String, String) pairs
@@ -351,16 +386,17 @@ impl<'a> Frame<'a> {
                     b"passcode",
                     b"heart-beat",
                 ];
-                let heartbeat = if let Some(hb) = fh(h, "heart-beat") {
+                // CONNECT headers are not escaped, so they are read as they are
+                let heartbeat = if let Some(hb) = fetch_raw_header(h, "heart-beat") {
                     Some(parse_heartbeat(&hb)?)
                 } else {
                     None
                 };
                 Connect {
-                    accept_version: eh(h, "accept-version")?,
-                    host: eh(h, "host")?,
-                    login: fh(h, "login"),
-                    passcode: fh(h, "passcode"),
+                    accept_version: expect_raw_header(h, "accept-version")?,
+                    host: expect_raw_header(h, "host")?,
+                    login: fetch_raw_header(h, "login"),
+                    passcode: fetch_raw_header(h, "passcode"),
                     heartbeat,
                 }
             }
@@ -465,11 +501,12 @@ impl<'a> Frame<'a> {
         let content = match self.command {
             b"CONNECTED" | b"connected" => {
                 expect_keys = &[b"version", b"session", b"server", b"heart-beat"];
+                // CONNECTED headers are not escaped, so they are read as they are
                 Connected {
-                    version: eh(h, "version")?,
-                    session: fh(h, "session"),
-                    server: fh(h, "server"),
-                    heartbeat: fh(h, "heart-beat"),
+                    version: expect_raw_header(h, "version")?,
+                    session: fetch_raw_header(h, "session"),
+                    server: fetch_raw_header(h, "server"),
+                    heartbeat: fetch_raw_header(h, "heart-beat"),
                 }
             }
             b"MESSAGE" | b"message" => {
@@ -1076,5 +1113,66 @@ subscription:sub-123\n\ntest message body\x00";
             1,
             "Expected exactly one content-length header.\nActual: {serialized:?}"
         );
+    }
+
+    /// Tests that CONNECT headers go out unescaped
+    ///
+    /// The spec exempts CONNECT and CONNECTED from header escaping, for
+    /// backward compatibility with STOMP 1.0. A colon or a backslash in a
+    /// credential is therefore sent as itself.
+    ///
+    /// If this test fails, a login or passcode containing `:` or `\` reaches the
+    /// broker altered, and authentication fails for a reason nothing in the
+    /// error points at.
+    #[test]
+    /// Testing:
+    /// https://stomp.github.io/stomp-specification-1.2.html#Value_Encoding
+    fn connect_headers_are_not_escaped() {
+        let msg: Message<ToServer> = ToServer::Connect {
+            accept_version: "1.2".into(),
+            host: "stomp.example.com".into(),
+            login: Some("DOMAIN\\user".into()),
+            passcode: Some("pa:ss\\word".into()),
+            heartbeat: None,
+        }
+        .into();
+
+        let mut buffer = BytesMut::new();
+        msg.to_frame().serialize(&mut buffer);
+        let serialized = String::from_utf8_lossy(&buffer);
+
+        assert!(
+            serialized.contains("login:DOMAIN\\user\n"),
+            "Login should be sent verbatim.\nActual: {serialized:?}"
+        );
+        assert!(
+            serialized.contains("passcode:pa:ss\\word\n"),
+            "Passcode should be sent verbatim.\nActual: {serialized:?}"
+        );
+    }
+
+    /// Tests that CONNECTED headers are read unescaped
+    ///
+    /// The mirror image of the rule above: a backslash in a `session` or
+    /// `server` value is a backslash, not the start of an escape sequence.
+    ///
+    /// If this test fails, session identifiers and server names containing a
+    /// backslash are mangled on the way in.
+    #[test]
+    /// Testing:
+    /// https://stomp.github.io/stomp-specification-1.2.html#Value_Encoding
+    fn connected_headers_are_not_unescaped() {
+        let data = b"CONNECTED\nversion:1.2\nsession:ID\\c1\nserver:ActiveMQ\\n5\n\n\x00";
+        let frame = parse_frame(&mut Partial::new(data.as_slice())).unwrap();
+        let message = frame.to_server_msg().expect("Read the CONNECTED frame");
+
+        let FromServer::Connected {
+            session, server, ..
+        } = message.content
+        else {
+            panic!("Expected a CONNECTED frame but got: {:?}", message.content);
+        };
+        assert_eq!(session.as_deref(), Some("ID\\c1"));
+        assert_eq!(server.as_deref(), Some("ActiveMQ\\n5"));
     }
 }
