@@ -121,6 +121,7 @@ pub struct Connector<S = Unset, V = Unset> {
     headers: Vec<(String, String)>,
     use_tls: bool,
     tls_server_name: Option<String>,
+    max_frame_size: usize,
 }
 
 /// A required builder field that has not been set yet
@@ -166,6 +167,7 @@ impl Connector<Unset, Unset> {
             headers: Vec::new(),
             use_tls: false,
             tls_server_name: None,
+            max_frame_size: DEFAULT_MAX_FRAME_SIZE,
         }
     }
 }
@@ -181,6 +183,7 @@ impl<S, V> Connector<S, V> {
             headers: self.headers,
             use_tls: self.use_tls,
             tls_server_name: self.tls_server_name,
+            max_frame_size: self.max_frame_size,
         }
     }
 
@@ -195,6 +198,7 @@ impl<S, V> Connector<S, V> {
             headers: self.headers,
             use_tls: self.use_tls,
             tls_server_name: self.tls_server_name,
+            max_frame_size: self.max_frame_size,
         }
     }
 
@@ -219,6 +223,17 @@ impl<S, V> Connector<S, V> {
     /// Connect over TLS. Defaults to `false`.
     pub fn use_tls(mut self, use_tls: bool) -> Self {
         self.use_tls = use_tls;
+        self
+    }
+
+    /// Give up on a frame from the server once it grows past this many bytes.
+    /// Defaults to [`DEFAULT_MAX_FRAME_SIZE`].
+    ///
+    /// The bound is what stops a broken or hostile `content-length` from
+    /// growing the read buffer until the process runs out of memory. Raise it
+    /// only alongside the matching setting on the broker.
+    pub fn max_frame_size(mut self, max_frame_size: usize) -> Self {
+        self.max_frame_size = max_frame_size;
         self
     }
 
@@ -306,7 +321,8 @@ impl<S: tokio::net::ToSocketAddrs + Clone, V: Into<String> + Clone> Connector<S,
         };
 
         // Create a framed transport with the STOMP codec
-        let mut transport = ClientCodec.framed(transport_stream);
+        let mut transport =
+            ClientCodec::with_max_frame_size(self.max_frame_size).framed(transport_stream);
 
         // Perform the STOMP protocol handshake
         client_handshake(
@@ -555,12 +571,50 @@ impl<S: Into<String>, I: Into<String>> Subscriber<S, I> {
     }
 }
 
+/// Largest frame this client will buffer, unless told otherwise
+///
+/// Matches the default ActiveMQ and Artemis accept, so a message the broker
+/// took is a message this client can read.
+pub const DEFAULT_MAX_FRAME_SIZE: usize = 104_857_600;
+
 /// Codec for encoding/decoding STOMP protocol frames for client usage
 ///
 /// This codec handles the conversion between STOMP protocol frames and Rust types,
 /// implementing the tokio_util::codec::Encoder and Decoder traits.
 #[derive(Debug)]
-pub struct ClientCodec;
+pub struct ClientCodec {
+    /// Refuse to keep buffering once an unfinished frame passes this size
+    max_frame_size: usize,
+}
+
+impl Default for ClientCodec {
+    fn default() -> Self {
+        ClientCodec {
+            max_frame_size: DEFAULT_MAX_FRAME_SIZE,
+        }
+    }
+}
+
+impl ClientCodec {
+    /// A codec bounded by [`DEFAULT_MAX_FRAME_SIZE`]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// A codec that gives up on a frame once it grows past `max_frame_size`
+    ///
+    /// The bound is what stops a broken or hostile `content-length` from
+    /// growing the read buffer until the process runs out of memory.
+    ///
+    /// ```rust
+    /// use async_stomp::client::ClientCodec;
+    ///
+    /// let codec = ClientCodec::with_max_frame_size(1024 * 1024);
+    /// ```
+    pub fn with_max_frame_size(max_frame_size: usize) -> Self {
+        ClientCodec { max_frame_size }
+    }
+}
 
 impl Decoder for ClientCodec {
     type Item = Message<FromServer>;
@@ -579,8 +633,16 @@ impl Decoder for ClientCodec {
         // Attempt to parse a frame from the buffer
         let item = match frame::parse_frame(buf) {
             Ok(frame) => Message::<FromServer>::from_frame(frame),
-            Err(ErrMode::Incomplete(_)) => return Ok(None), // Need more data
-            Err(e) => bail!("Parse failed: {:?}", e),       // Parsing error
+            Err(ErrMode::Incomplete(_)) => {
+                // More data is wanted. If the unfinished frame is already over
+                // the bound, no amount of further reading makes it acceptable,
+                // so stop before the buffer grows any further.
+                if src.len() > self.max_frame_size {
+                    bail!("Frame exceeds the maximum of {} bytes", self.max_frame_size);
+                }
+                return Ok(None);
+            }
+            Err(e) => bail!("Parse failed: {:?}", e), // Parsing error
         };
 
         // Calculate how many bytes were consumed
@@ -616,12 +678,13 @@ mod tests {
 
     use crate::{
         AckMode, Message, ToServer,
-        client::{Connector, Subscriber},
+        client::{ClientCodec, Connector, Subscriber},
     };
     use bytes::BytesMut;
     use std::time::Duration;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
+    use tokio_util::codec::Decoder;
 
     /// Tests the creation of a STOMP subscription message
     ///
@@ -909,5 +972,50 @@ mod tests {
             .expect_err("A CONNECTED naming 1.1 should be refused");
 
         assert!(error.to_string().contains("1.1"), "{error}");
+    }
+
+    /// Tests that an unfinished frame past the bound is refused
+    ///
+    /// A content-length far larger than anything real would otherwise have the
+    /// decoder wait, and the read buffer grow, until the process runs out of
+    /// memory.
+    ///
+    /// If this test fails, a broken or hostile length header can exhaust the
+    /// client's memory.
+    #[test]
+    fn a_frame_growing_past_the_bound_is_refused() {
+        let mut codec = ClientCodec::with_max_frame_size(64);
+        let mut buffer = BytesMut::new();
+        buffer.extend_from_slice(
+            b"MESSAGE\ndestination:/queue/a\nmessage-id:1\nsubscription:s\ncontent-length:999999999\n\n",
+        );
+        buffer.extend_from_slice(&[b'x'; 200]);
+
+        assert!(
+            codec.decode(&mut buffer).is_err(),
+            "An unfinished frame past the bound should be refused"
+        );
+    }
+
+    /// Tests that an unfinished frame under the bound is simply waited on
+    ///
+    /// The bound must not turn ordinary fragmentation, where a frame arrives
+    /// over several reads, into an error.
+    ///
+    /// If this test fails, any message split across TCP segments fails to
+    /// arrive.
+    #[test]
+    fn an_unfinished_frame_under_the_bound_waits_for_more() {
+        let mut codec = ClientCodec::with_max_frame_size(1024);
+        let mut buffer = BytesMut::new();
+        buffer.extend_from_slice(b"MESSAGE\ndestination:/queue/a\nmessage-id:1\n");
+
+        assert!(
+            codec
+                .decode(&mut buffer)
+                .expect("A partial frame is not an error")
+                .is_none(),
+            "The decoder should ask for more data"
+        );
     }
 }
