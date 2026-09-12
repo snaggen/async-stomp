@@ -262,7 +262,15 @@ fn unescape_header_value(value: &[u8]) -> Vec<u8> {
                 b'c' => result.push(b':'),
                 b'\\' => result.push(b'\\'),
                 _ => {
-                    // If not a recognized escape sequence, keep as is
+                    // The spec calls an undefined escape sequence a fatal
+                    // protocol error. Keeping the bytes is a deliberate
+                    // departure: in practice such a sequence comes from a
+                    // server that does not escape at all rather than one that
+                    // escapes wrongly, and a header value like `C:\\temp` then
+                    // survives intact. Failing instead would tear down the
+                    // connection, and since STOMP cannot resynchronise, a
+                    // redelivery of the same message would tear down the next
+                    // one too.
                     result.push(value[i]);
                     result.push(value[i + 1]);
                 }
