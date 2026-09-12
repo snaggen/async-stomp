@@ -317,7 +317,7 @@ async fn main() -> Result<(), anyhow::Error> {
     let subscribe_client_ack = Subscriber::builder()
         .destination("queue.important")
         .id("sub-with-ack")
-        .headers(vec![("ack".to_string(), "client".to_string())])
+        .ack(AckMode::Client)
         .subscribe();
         
     conn.send(subscribe_client_ack).await?;
@@ -350,17 +350,17 @@ STOMP supports three acknowledgment modes:
 1. **Auto** (default if not specified)
    - Messages are automatically acknowledged by the client as soon as they are received
    - No explicit acknowledgment is required
-   - Example: `vec![("ack".to_string(), "auto".to_string())]`
+   - Example: `.ack(AckMode::Auto)`
 
 2. **Client**
    - The client must explicitly acknowledge messages
    - An ACK acknowledges all messages received so far on the connection
-   - Example: `.headers(vec![("ack".to_string(), "client".to_string())])`
+   - Example: `.ack(AckMode::Client)`
 
 3. **Client-Individual**
    - The client must explicitly acknowledge each individual message
    - Each message must be acknowledged separately
-   - Example: `.headers(vec![("ack".to_string(), "client-individual".to_string())])`
+   - Example: `.ack(AckMode::ClientIndividual)`
 
 #### **Example with Auto Acknowledgment (Default)**
 
@@ -383,7 +383,7 @@ conn.send(subscribe_auto).await?;
 let subscribe_individual = Subscriber::builder()
     .destination("queue.critical")
     .id("sub-individual")
-    .headers(vec![("ack".to_string(), "client-individual".to_string())])
+    .ack(AckMode::ClientIndividual)
     .subscribe();
     
 conn.send(subscribe_individual).await?;

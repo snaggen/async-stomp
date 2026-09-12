@@ -1,5 +1,5 @@
 use crate::frame;
-use crate::{FromServer, Message, Result, ToServer};
+use crate::{AckMode, FromServer, Message, Result, ToServer};
 use anyhow::{anyhow, bail};
 use bytes::{Buf, BytesMut};
 use futures::prelude::*;
@@ -427,6 +427,7 @@ async fn client_handshake(
 pub struct Subscriber<S = Unset, I = Unset> {
     destination: S,
     id: I,
+    ack: Option<AckMode>,
     headers: Vec<(String, String)>,
 }
 
@@ -462,6 +463,7 @@ impl Subscriber<Unset, Unset> {
         Subscriber {
             destination: Unset,
             id: Unset,
+            ack: None,
             headers: Vec::new(),
         }
     }
@@ -473,6 +475,7 @@ impl<S, I> Subscriber<S, I> {
         Subscriber {
             destination,
             id: self.id,
+            ack: self.ack,
             headers: self.headers,
         }
     }
@@ -483,12 +486,35 @@ impl<S, I> Subscriber<S, I> {
         Subscriber {
             destination: self.destination,
             id,
+            ack: self.ack,
             headers: self.headers,
         }
     }
 
-    /// Extra headers for the SUBSCRIBE frame, such as `ack` or a broker
-    /// specific subscription name
+    /// How messages on this subscription are acknowledged
+    ///
+    /// Leaving it unset means [`AckMode::Auto`], where the broker considers a
+    /// message delivered the moment it sends it. The other modes require an
+    /// [`ToServer::Ack`] per message, built from the `ack` field of the
+    /// [`FromServer::Message`](crate::FromServer::Message).
+    ///
+    /// ```rust
+    /// use async_stomp::AckMode;
+    /// use async_stomp::client::Subscriber;
+    ///
+    /// let msg = Subscriber::builder()
+    ///     .destination("queue.test")
+    ///     .id("sub-1")
+    ///     .ack(AckMode::ClientIndividual)
+    ///     .subscribe();
+    /// ```
+    pub fn ack(mut self, ack: AckMode) -> Self {
+        self.ack = Some(ack);
+        self
+    }
+
+    /// Extra headers for the SUBSCRIBE frame, such as a broker specific
+    /// subscription name
     pub fn headers(mut self, headers: Vec<(String, String)>) -> Self {
         self.headers = headers;
         self
@@ -505,7 +531,7 @@ impl<S: Into<String>, I: Into<String>> Subscriber<S, I> {
         let mut msg: Message<ToServer> = ToServer::Subscribe {
             destination: self.destination.into(),
             id: self.id.into(),
-            ack: None,
+            ack: self.ack,
         }
         .into();
 
@@ -579,7 +605,7 @@ impl Encoder<Message<ToServer>> for ClientCodec {
 mod tests {
 
     use crate::{
-        Message, ToServer,
+        AckMode, Message, ToServer,
         client::{Connector, Subscriber},
     };
     use bytes::BytesMut;
@@ -778,5 +804,49 @@ mod tests {
         connector().msg().to_frame().serialize(&mut expected);
 
         assert_eq!(server.await.expect("The test server"), expected.to_vec());
+    }
+
+    /// Tests that the ack mode reaches the SUBSCRIBE frame
+    ///
+    /// The mode decides whether the broker expects an ACK per message, so
+    /// getting it onto the wire is what makes the difference between a message
+    /// that is redelivered after a crash and one that is lost.
+    ///
+    /// If this test fails, a subscription asking for explicit acknowledgment
+    /// silently runs in auto mode instead.
+    #[test]
+    fn subscribe_sets_the_ack_mode() {
+        let msg = Subscriber::builder()
+            .destination("queue.test")
+            .id("sub-1")
+            .ack(AckMode::ClientIndividual)
+            .subscribe();
+
+        let mut buffer = BytesMut::new();
+        msg.to_frame().serialize(&mut buffer);
+        let frame = String::from_utf8_lossy(&buffer);
+
+        assert!(frame.contains("ack:client-individual"), "{frame}");
+    }
+
+    /// Tests that no ack mode is sent unless one was asked for
+    ///
+    /// Leaving the header off means the server's default, auto, which is what
+    /// every caller of this crate has had so far.
+    ///
+    /// If this test fails, existing subscriptions change acknowledgment mode
+    /// under their callers.
+    #[test]
+    fn subscribe_leaves_the_ack_mode_out_by_default() {
+        let msg = Subscriber::builder()
+            .destination("queue.test")
+            .id("sub-1")
+            .subscribe();
+
+        let mut buffer = BytesMut::new();
+        msg.to_frame().serialize(&mut buffer);
+        let frame = String::from_utf8_lossy(&buffer);
+
+        assert!(!frame.contains("ack:"), "{frame}");
     }
 }
