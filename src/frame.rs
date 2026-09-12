@@ -617,6 +617,21 @@ impl ToServer {
                     }
                 }
 
+                // A body holding NULL octets can only be read back if the frame
+                // says how long it is, so the spec requires content-length
+                // there. It stays off otherwise, where it is merely
+                // recommended: brokers such as ActiveMQ read its presence as
+                // "this payload is binary" and map the message differently.
+                if let Some(body) = body
+                    && body.contains(&0)
+                    && !hdr.iter().any(|(k, _)| *k == b"content-length")
+                {
+                    hdr.push((
+                        b"content-length",
+                        Some(Owned(body.len().to_string().into_bytes())),
+                    ));
+                }
+
                 Frame::new(b"SEND", &hdr, body.as_ref().map(|v| v.as_ref()))
             }
             Ack {
@@ -963,5 +978,103 @@ subscription:sub-123\n\ntest message body\x00";
 
         assert_eq!(frame.command, b"SEND");
         parse_and_serialize_to_server(&data, frame, headers_expect, Some(body));
+    }
+
+    /// Tests that a body holding NULL octets is sent with a content-length
+    ///
+    /// Without the header a reader stops at the first NULL, so the spec makes
+    /// content-length mandatory for such a body. The body is parsed back here
+    /// rather than only inspected, since surviving the round trip is the whole
+    /// point of the header.
+    ///
+    /// If this test fails, every binary payload containing a zero byte is
+    /// silently truncated at that byte on its way to the broker.
+    #[test]
+    /// Testing:
+    /// https://stomp.github.io/stomp-specification-1.2.html#Header_content-length
+    fn send_with_null_octets_in_the_body_sets_content_length() {
+        let body = b"binary \x00 payload \x00 here".to_vec();
+        let msg: Message<ToServer> = ToServer::Send {
+            destination: "/queue/a".into(),
+            transaction: None,
+            headers: None,
+            body: Some(body.clone()),
+        }
+        .into();
+
+        let mut buffer = BytesMut::new();
+        msg.to_frame().serialize(&mut buffer);
+
+        let serialized = String::from_utf8_lossy(&buffer);
+        assert!(
+            serialized.contains(&format!("content-length:{}", body.len())),
+            "Expected a content-length header.\nActual: {serialized:?}"
+        );
+
+        let parsed = parse_frame(&mut Partial::new(&buffer[..])).expect("Parse the frame back");
+        assert_eq!(
+            parsed.body,
+            Some(body.as_slice()),
+            "The whole body should survive the round trip"
+        );
+    }
+
+    /// Tests that an ordinary body is sent without a content-length
+    ///
+    /// For a body without NULL octets the header is only recommended, and
+    /// adding it is not free: ActiveMQ reads its presence as "this payload is
+    /// binary" and maps the message to a different JMS type. Leaving it off
+    /// keeps what every existing caller already puts on the wire.
+    ///
+    /// If this test fails, messages that used to arrive as text arrive as bytes
+    /// instead, which consumers notice.
+    #[test]
+    fn send_without_null_octets_leaves_content_length_off() {
+        let msg: Message<ToServer> = ToServer::Send {
+            destination: "/queue/a".into(),
+            transaction: None,
+            headers: None,
+            body: Some(b"an ordinary text body".to_vec()),
+        }
+        .into();
+
+        let mut buffer = BytesMut::new();
+        msg.to_frame().serialize(&mut buffer);
+        let serialized = String::from_utf8_lossy(&buffer);
+
+        assert!(
+            !serialized.contains("content-length"),
+            "Did not expect a content-length header.\nActual: {serialized:?}"
+        );
+    }
+
+    /// Tests that a caller supplying content-length is not overruled
+    ///
+    /// The header may be set through the `headers` field, and the frame must
+    /// then carry it once. Two entries would make the broker use the first and
+    /// the meaning depend on ordering.
+    ///
+    /// If this test fails, a caller who sets the header themselves produces a
+    /// frame with a duplicate, which is at best wasteful and at worst ambiguous.
+    #[test]
+    fn send_keeps_a_caller_supplied_content_length() {
+        let body = b"a\x00b".to_vec();
+        let msg: Message<ToServer> = ToServer::Send {
+            destination: "/queue/a".into(),
+            transaction: None,
+            headers: Some(vec![("content-length".into(), body.len().to_string())]),
+            body: Some(body),
+        }
+        .into();
+
+        let mut buffer = BytesMut::new();
+        msg.to_frame().serialize(&mut buffer);
+        let serialized = String::from_utf8_lossy(&buffer);
+
+        assert_eq!(
+            serialized.matches("content-length:").count(),
+            1,
+            "Expected exactly one content-length header.\nActual: {serialized:?}"
+        );
     }
 }
