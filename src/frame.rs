@@ -607,7 +607,7 @@ impl ToServer {
                 // Create the base headers for the SEND frame
                 let mut hdr: Vec<HeaderTuple> = vec![
                     (b"destination", Some(Borrowed(destination.as_bytes()))),
-                    (b"id", sb(transaction)),
+                    (b"transaction", sb(transaction)),
                 ];
 
                 // Add any custom headers
@@ -934,5 +934,34 @@ subscription:sub-123\n\ntest message body\x00";
             serialized.contains("ID\\cnotificationator\\n\\rwith\\\\backslash-1\\c1"),
             "Serialized message should contain properly escaped special characters.\nActual: {serialized}"
         );
+    }
+
+    /// Tests that a SEND frame names its transaction header `transaction`
+    ///
+    /// `transaction` is the only optional header the spec gives SEND, and it is
+    /// what binds the message to a started transaction. This runs the frame
+    /// through the same parse-serialize cycle as the other SEND tests, so it
+    /// covers both the name on the wire and the round trip through
+    /// `to_client_msg`.
+    ///
+    /// If this test fails, messages sent inside a transaction are published
+    /// straight away instead, and an ABORT no longer takes them back — silently,
+    /// since brokers pass an unknown header through as a user header.
+    #[test]
+    /// Testing:
+    /// https://stomp.github.io/stomp-specification-1.2.html#SEND
+    fn parse_and_serialize_client_send_message_in_transaction() {
+        let mut data = b"SEND\ndestination:/queue/a\ntransaction:tx-1\n\n".to_vec();
+        let body = b"sent inside a transaction";
+        data.extend_from_slice(body);
+        data.extend_from_slice(b"\x00");
+        let frame = parse_frame(&mut Partial::new(data.as_slice())).unwrap();
+        let headers_expect: Vec<(&[u8], &[u8])> = vec![
+            (&b"destination"[..], &b"/queue/a"[..]),
+            (b"transaction", b"tx-1"),
+        ];
+
+        assert_eq!(frame.command, b"SEND");
+        parse_and_serialize_to_server(&data, frame, headers_expect, Some(body));
     }
 }
