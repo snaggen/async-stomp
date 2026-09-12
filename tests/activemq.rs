@@ -29,8 +29,8 @@
 //! ActiveMQ Classic rather than Artemis, since Artemis expects heart-beating
 //! that this branch does not implement yet.
 
-use async_stomp::client::{ClientTransport, Connector, Subscriber};
-use async_stomp::{FromServer, Message, ToServer};
+use async_stomp::client::{ClientTransport, Connector, Subscriber, disconnect};
+use async_stomp::{AckMode, FromServer, Message, ToServer};
 use futures::prelude::*;
 use std::time::Duration;
 use tokio::time::timeout;
@@ -93,16 +93,26 @@ async fn next_frame_or_silence(conn: &mut ClientTransport) -> Option<FromServer>
     }
 }
 
+/// What a received MESSAGE carries, as far as these tests care
+struct Received {
+    body: Option<Vec<u8>>,
+    /// The value an ACK for this message has to quote
+    ack: Option<String>,
+    headers: Vec<(String, String)>,
+}
+
 /// Take the next frame, which must be a MESSAGE
-async fn next_message(conn: &mut ClientTransport) -> (Option<Vec<u8>>, Vec<(String, String)>) {
+async fn next_message(conn: &mut ClientTransport) -> Received {
     match next_frame(conn).await {
-        FromServer::Message { body, headers, .. } => (body, headers),
+        FromServer::Message {
+            body, ack, headers, ..
+        } => Received { body, ack, headers },
         other => panic!("Expected a MESSAGE frame, got {other:?}"),
     }
 }
 
 async fn next_body(conn: &mut ClientTransport) -> Option<Vec<u8>> {
-    next_message(conn).await.0
+    next_message(conn).await.body
 }
 
 /// Subscribe and wait for the broker to confirm it
@@ -110,18 +120,12 @@ async fn next_body(conn: &mut ClientTransport) -> Option<Vec<u8>> {
 /// The receipt matters: without it a message sent immediately afterwards can
 /// beat the subscription, and the test then fails for a reason that is not the
 /// one being tested.
-async fn subscribe(conn: &mut ClientTransport, destination: &str, id: &str, ack: Option<&str>) {
-    let headers = ack
-        .map(|mode| vec![("ack".to_string(), mode.to_string())])
-        .unwrap_or_default();
-    let msg = with_receipt(
-        Subscriber::builder()
-            .destination(destination)
-            .id(id)
-            .headers(headers)
-            .subscribe(),
-        "sub",
-    );
+async fn subscribe(conn: &mut ClientTransport, destination: &str, id: &str, ack: Option<AckMode>) {
+    let mut builder = Subscriber::builder().destination(destination).id(id);
+    if let Some(mode) = ack {
+        builder = builder.ack(mode);
+    }
+    let msg = with_receipt(builder.subscribe(), "sub");
     conn.send(msg).await.expect("Send the SUBSCRIBE frame");
     expect_receipt(conn, "sub").await;
 }
@@ -174,8 +178,7 @@ async fn send_confirmed(conn: &mut ClientTransport, msg: Message<ToServer>, rece
 /// Tests that a connection can be opened and closed the way the spec describes
 ///
 /// The graceful shutdown is DISCONNECT with a receipt, then wait for the
-/// RECEIPT before closing the socket. Nothing in the crate does this for the
-/// caller, so this is also the worked example of doing it by hand.
+/// RECEIPT before closing the socket, which is what `disconnect` does.
 ///
 /// If this test fails, the handshake or the receipt mechanism is broken and
 /// every other test here is untrustworthy.
@@ -183,16 +186,9 @@ async fn send_confirmed(conn: &mut ClientTransport, msg: Message<ToServer>, rece
 #[ignore = "needs a broker, see the module docs"]
 async fn a_connection_opens_and_closes_cleanly() {
     let mut conn = connect().await;
-    conn.send(with_receipt(
-        ToServer::Disconnect {
-            receipt: Some("bye".into()),
-        }
-        .into(),
-        "bye",
-    ))
-    .await
-    .expect("Send DISCONNECT");
-    expect_receipt(&mut conn, "bye").await;
+    disconnect(&mut conn, "bye")
+        .await
+        .expect("Disconnect should be acknowledged");
 }
 
 /// Tests that a passcode holding a colon and a backslash authenticates
@@ -351,7 +347,7 @@ async fn user_headers_are_forwarded_to_the_consumer() {
     .await
     .expect("Send with headers");
 
-    let (_, headers) = next_message(&mut conn).await;
+    let headers = next_message(&mut conn).await.headers;
     assert_eq!(header(&headers, "x-one"), Some("first"), "{headers:?}");
     assert_eq!(header(&headers, "x-two"), Some("second"), "{headers:?}");
 }
@@ -382,7 +378,7 @@ async fn a_header_value_needing_escapes_survives_the_broker() {
     .await
     .expect("Send with a tricky header");
 
-    let (_, headers) = next_message(&mut conn).await;
+    let headers = next_message(&mut conn).await.headers;
     assert_eq!(
         header(&headers, "x-tricky"),
         Some(tricky),
@@ -407,7 +403,7 @@ async fn a_message_names_its_destination_and_subscription() {
         .await
         .expect("Send");
 
-    let (_, headers) = next_message(&mut conn).await;
+    let headers = next_message(&mut conn).await.headers;
     assert_eq!(header(&headers, "destination"), Some(dest.as_str()));
     assert_eq!(header(&headers, "subscription"), Some("sub-routing"));
 }
@@ -597,7 +593,8 @@ async fn two_subscriptions_are_told_apart_by_id() {
         .await
         .expect("Send to the second queue");
 
-    let (body, headers) = next_message(&mut conn).await;
+    let received = next_message(&mut conn).await;
+    let (body, headers) = (received.body, received.headers);
     assert_eq!(body.as_deref(), Some(&b"to b"[..]));
     assert_eq!(header(&headers, "subscription"), Some("sub-b"));
     assert_eq!(header(&headers, "destination"), Some(second.as_str()));
@@ -657,16 +654,22 @@ async fn unsubscribe_stops_delivery() {
 async fn acknowledging_with_the_ack_header_is_accepted() {
     let dest = queue("ack-ok");
     let mut conn = connect().await;
-    subscribe(&mut conn, &dest, "sub-ack-ok", Some("client-individual")).await;
+    subscribe(
+        &mut conn,
+        &dest,
+        "sub-ack-ok",
+        Some(AckMode::ClientIndividual),
+    )
+    .await;
 
     conn.send(publish(&dest, None, None, b"needs an ack"))
         .await
         .expect("Send");
 
-    let (_, headers) = next_message(&mut conn).await;
-    let ack = header(&headers, "ack")
-        .expect("A client-individual subscription must get an ack header")
-        .to_string();
+    let ack = next_message(&mut conn)
+        .await
+        .ack
+        .expect("A client-individual subscription must get an ack value");
 
     send_confirmed(
         &mut conn,
@@ -695,17 +698,26 @@ async fn acknowledging_with_the_ack_header_is_accepted() {
 async fn acknowledging_with_the_message_id_is_rejected() {
     let dest = queue("ack-bad");
     let mut conn = connect().await;
-    subscribe(&mut conn, &dest, "sub-ack-bad", Some("client-individual")).await;
+    subscribe(
+        &mut conn,
+        &dest,
+        "sub-ack-bad",
+        Some(AckMode::ClientIndividual),
+    )
+    .await;
 
     conn.send(publish(&dest, None, None, b"needs an ack"))
         .await
         .expect("Send");
 
-    let (_, headers) = next_message(&mut conn).await;
-    let message_id = header(&headers, "message-id")
+    let received = next_message(&mut conn).await;
+    let message_id = header(&received.headers, "message-id")
         .expect("A MESSAGE carries a message-id")
         .to_string();
-    let ack = header(&headers, "ack").expect("A client-individual subscription gets an ack header");
+    let ack = received
+        .ack
+        .as_deref()
+        .expect("A client-individual subscription gets an ack value");
     assert_ne!(
         ack, message_id,
         "This test only means something while the two differ"
@@ -750,7 +762,13 @@ async fn an_unacknowledged_message_is_redelivered() {
 
     {
         let mut consumer = connect().await;
-        subscribe(&mut consumer, &dest, "sub-first", Some("client-individual")).await;
+        subscribe(
+            &mut consumer,
+            &dest,
+            "sub-first",
+            Some(AckMode::ClientIndividual),
+        )
+        .await;
         assert_eq!(
             next_body(&mut consumer).await.as_deref(),
             Some(&b"unacked"[..])
@@ -759,7 +777,13 @@ async fn an_unacknowledged_message_is_redelivered() {
     }
 
     let mut second = connect().await;
-    subscribe(&mut second, &dest, "sub-second", Some("client-individual")).await;
+    subscribe(
+        &mut second,
+        &dest,
+        "sub-second",
+        Some(AckMode::ClientIndividual),
+    )
+    .await;
     assert_eq!(
         next_body(&mut second).await.as_deref(),
         Some(&b"unacked"[..]),
@@ -784,9 +808,14 @@ async fn an_acknowledged_message_is_not_redelivered() {
 
     {
         let mut consumer = connect().await;
-        subscribe(&mut consumer, &dest, "sub-first", Some("client-individual")).await;
-        let (_, headers) = next_message(&mut consumer).await;
-        let ack = header(&headers, "ack").expect("An ack header").to_string();
+        subscribe(
+            &mut consumer,
+            &dest,
+            "sub-first",
+            Some(AckMode::ClientIndividual),
+        )
+        .await;
+        let ack = next_message(&mut consumer).await.ack.expect("An ack value");
         send_confirmed(
             &mut consumer,
             ToServer::Ack {
@@ -800,7 +829,13 @@ async fn an_acknowledged_message_is_not_redelivered() {
     }
 
     let mut second = connect().await;
-    subscribe(&mut second, &dest, "sub-second", Some("client-individual")).await;
+    subscribe(
+        &mut second,
+        &dest,
+        "sub-second",
+        Some(AckMode::ClientIndividual),
+    )
+    .await;
     assert!(
         next_frame_or_silence(&mut second).await.is_none(),
         "An acknowledged message should not come back"
@@ -826,14 +861,19 @@ async fn an_acknowledged_message_is_not_redelivered() {
 async fn a_nack_is_accepted_by_the_broker() {
     let dest = queue("nack");
     let mut conn = connect().await;
-    subscribe(&mut conn, &dest, "sub-nack", Some("client-individual")).await;
+    subscribe(
+        &mut conn,
+        &dest,
+        "sub-nack",
+        Some(AckMode::ClientIndividual),
+    )
+    .await;
 
     conn.send(publish(&dest, None, None, b"nacked"))
         .await
         .expect("Send");
 
-    let (_, headers) = next_message(&mut conn).await;
-    let ack = header(&headers, "ack").expect("An ack header").to_string();
+    let ack = next_message(&mut conn).await.ack.expect("An ack value");
 
     send_confirmed(
         &mut conn,
@@ -863,9 +903,14 @@ async fn an_acknowledgment_can_be_part_of_a_transaction() {
 
     {
         let mut consumer = connect().await;
-        subscribe(&mut consumer, &dest, "sub-first", Some("client-individual")).await;
-        let (_, headers) = next_message(&mut consumer).await;
-        let ack = header(&headers, "ack").expect("An ack header").to_string();
+        subscribe(
+            &mut consumer,
+            &dest,
+            "sub-first",
+            Some(AckMode::ClientIndividual),
+        )
+        .await;
+        let ack = next_message(&mut consumer).await.ack.expect("An ack value");
 
         consumer
             .send(
@@ -898,9 +943,109 @@ async fn an_acknowledgment_can_be_part_of_a_transaction() {
     }
 
     let mut second = connect().await;
-    subscribe(&mut second, &dest, "sub-second", Some("client-individual")).await;
+    subscribe(
+        &mut second,
+        &dest,
+        "sub-second",
+        Some(AckMode::ClientIndividual),
+    )
+    .await;
     assert!(
         next_frame_or_silence(&mut second).await.is_none(),
         "The committed acknowledgment should have removed the message"
     );
+}
+
+/// Tests that the ack mode chosen on the builder reaches the broker
+///
+/// `Subscriber::ack` is the supported way to ask for explicit acknowledgment.
+/// The broker only sends an `ack` value on a subscription that asked for one,
+/// so its presence is the proof that the mode travelled.
+///
+/// If this test fails, a subscription that asked for client acknowledgment is
+/// running in auto mode, and messages are lost when a consumer fails.
+#[tokio::test]
+#[ignore = "needs a broker, see the module docs"]
+async fn the_builders_ack_mode_reaches_the_broker() {
+    let dest = queue("ackmode");
+    let mut conn = connect().await;
+    subscribe(&mut conn, &dest, "sub-ackmode", Some(AckMode::Client)).await;
+
+    conn.send(publish(&dest, None, None, b"client ack"))
+        .await
+        .expect("Send");
+
+    assert!(
+        next_message(&mut conn).await.ack.is_some(),
+        "A subscription in client mode should be given something to acknowledge with"
+    );
+}
+
+/// Tests that a subscription in auto mode is given nothing to acknowledge
+///
+/// The contrast to the test above: without it, an `ack` value that is always
+/// present would pass both.
+///
+/// If this test fails, callers are handed an acknowledgment value the broker
+/// never issued and will not accept.
+#[tokio::test]
+#[ignore = "needs a broker, see the module docs"]
+async fn a_subscription_in_auto_mode_gets_no_ack_value() {
+    let dest = queue("auto-ack");
+    let mut conn = connect().await;
+    subscribe(&mut conn, &dest, "sub-auto", None).await;
+
+    conn.send(publish(&dest, None, None, b"no ack needed"))
+        .await
+        .expect("Send");
+
+    assert_eq!(
+        next_message(&mut conn).await.ack,
+        None,
+        "Auto mode needs no acknowledgment, so there is nothing to quote"
+    );
+}
+
+/// Tests that a message past the configured bound is refused rather than buffered
+///
+/// The bound is what stops a broken or hostile `content-length` from growing
+/// the read buffer until the process runs out of memory. A real oversized
+/// message is the closest thing to that a cooperating broker can produce.
+///
+/// If this test fails, the bound is not enforced on the receive path and the
+/// client will buffer whatever it is sent.
+#[tokio::test]
+#[ignore = "needs a broker, see the module docs"]
+async fn a_message_over_the_frame_bound_is_refused() {
+    let dest = queue("bound");
+
+    let mut producer = connect().await;
+    send_confirmed(
+        &mut producer,
+        publish(&dest, None, None, &vec![b'x'; 64 * 1024]),
+        "p",
+    )
+    .await;
+
+    let mut consumer = Connector::builder()
+        .server(BROKER)
+        .virtualhost("/")
+        .login(LOGIN.to_string())
+        .passcode(PASSCODE.to_string())
+        .max_frame_size(4096)
+        .connect()
+        .await
+        .expect("Connect with a small bound");
+    subscribe(&mut consumer, &dest, "sub-bound", None).await;
+
+    match timeout(REPLY_TIMEOUT, consumer.next())
+        .await
+        .expect("The broker should answer within the timeout")
+    {
+        Some(Err(e)) => assert!(
+            e.to_string().contains("maximum"),
+            "Expected the bound to be named in the error, got {e}"
+        ),
+        other => panic!("Expected the oversized frame to be refused, got {other:?}"),
+    }
 }
