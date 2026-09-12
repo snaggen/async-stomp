@@ -416,6 +416,62 @@ async fn client_handshake(
     Ok(())
 }
 
+/// Close a connection the way the spec prescribes
+///
+/// Sends DISCONNECT with a receipt, waits for the matching RECEIPT, then shuts
+/// the socket down. The receipt is the point: without it the client cannot tell
+/// whether the server processed everything it was sent.
+///
+/// Frames still in flight arrive before the receipt and are discarded, so do
+/// this once the caller is finished reading.
+///
+/// ```rust,no_run
+/// use async_stomp::client::{disconnect, Connector};
+///
+/// # #[tokio::main]
+/// # async fn main() -> Result<(), anyhow::Error> {
+/// let mut conn = Connector::builder()
+///     .server("127.0.0.1:61613")
+///     .virtualhost("/")
+///     .connect()
+///     .await?;
+///
+/// disconnect(&mut conn, "bye").await?;
+/// # Ok(())
+/// # }
+/// ```
+pub async fn disconnect(transport: &mut ClientTransport, receipt: impl Into<String>) -> Result<()> {
+    let receipt = receipt.into();
+    transport
+        .send(
+            ToServer::Disconnect {
+                receipt: Some(receipt.clone()),
+            }
+            .into(),
+        )
+        .await?;
+
+    while let Some(msg) = transport.next().await.transpose()? {
+        match msg.content {
+            FromServer::Receipt { receipt_id } if receipt_id == receipt => {
+                transport.close().await?;
+                return Ok(());
+            }
+            FromServer::Error { message, .. } => {
+                bail!(
+                    "Server refused the disconnect: {}",
+                    message.unwrap_or_default()
+                )
+            }
+            // Whatever was already on its way to us, which the disconnect
+            // makes moot
+            _ => continue,
+        }
+    }
+
+    bail!("The server closed the connection without acknowledging the DISCONNECT")
+}
+
 /// Builder to create a Subscribe message with optional custom headers
 ///
 /// This struct provides a builder pattern for configuring subscription parameters
@@ -678,7 +734,7 @@ mod tests {
 
     use crate::{
         AckMode, Message, ToServer,
-        client::{ClientCodec, Connector, Subscriber},
+        client::{ClientCodec, Connector, Subscriber, disconnect},
     };
     use bytes::BytesMut;
     use std::time::Duration;
@@ -1017,5 +1073,53 @@ mod tests {
                 .is_none(),
             "The decoder should ask for more data"
         );
+    }
+
+    /// Tests that disconnecting sends a receipt and waits for it
+    ///
+    /// The spec's shutdown is DISCONNECT with a receipt, then wait for the
+    /// RECEIPT before closing, so that the client knows the server processed
+    /// everything it was sent.
+    ///
+    /// If this test fails, a clean shutdown closes the socket early and the
+    /// last frames sent may never have been processed.
+    #[tokio::test]
+    async fn disconnect_asks_for_a_receipt_and_waits_for_it() {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("Bind the test server");
+        let addr = listener.local_addr().expect("Test server address");
+
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.expect("Accept a connection");
+            read_frame(&mut socket).await;
+            socket
+                .write_all(b"CONNECTED\nversion:1.2\n\n\0")
+                .await
+                .expect("Reply CONNECTED");
+
+            let disconnect_frame = read_frame(&mut socket).await;
+            socket
+                .write_all(b"RECEIPT\nreceipt-id:bye\n\n\0")
+                .await
+                .expect("Reply RECEIPT");
+            disconnect_frame
+        });
+
+        let mut conn = Connector::builder()
+            .server(addr.to_string())
+            .virtualhost("test")
+            .connect()
+            .await
+            .expect("Connect to the test server");
+
+        disconnect(&mut conn, "bye")
+            .await
+            .expect("Disconnect cleanly");
+
+        let sent = server.await.expect("The test server");
+        let sent = String::from_utf8_lossy(&sent);
+        assert!(sent.starts_with("DISCONNECT\n"), "{sent}");
+        assert!(sent.contains("receipt:bye"), "{sent}");
     }
 }
