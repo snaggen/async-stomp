@@ -509,11 +509,12 @@ impl<'a> Frame<'a> {
                 }
             }
             b"MESSAGE" | b"message" => {
-                expect_keys = &[b"destination", b"message-id", b"subscription"];
+                expect_keys = &[b"destination", b"message-id", b"subscription", b"ack"];
                 Msg {
                     destination: eh(h, "destination")?,
                     message_id: eh(h, "message-id")?,
                     subscription: eh(h, "subscription")?,
+                    ack: fh(h, "ack"),
                     headers: all_headers(h)?,
                     body: self.body.map(|v| v.to_vec()),
                 }
@@ -1199,5 +1200,58 @@ subscription:sub-123\n\ntest message body\x00";
             frame.to_client_msg().is_err(),
             "A SEND with a non-UTF-8 header should be rejected"
         );
+    }
+
+    /// Tests that a MESSAGE carries the value an ACK has to quote
+    ///
+    /// STOMP 1.2 acknowledges by the `ack` header, and it is a different value
+    /// from `message-id`. Reaching it used to mean scanning the header list
+    /// while `message_id` sat there as a field, which is how the wrong one gets
+    /// picked.
+    ///
+    /// If this test fails, the value needed to acknowledge a message is not
+    /// exposed and callers fall back to `message_id`, which a 1.2 broker
+    /// rejects with an ERROR and a closed connection.
+    #[test]
+    /// Testing:
+    /// https://stomp.github.io/stomp-specification-1.2.html#MESSAGE
+    fn a_message_carries_its_ack_value() {
+        let data =
+            b"MESSAGE\ndestination:/queue/a\nmessage-id:mid-1\nsubscription:sub-1\nack:ack-1\n\nbody\x00";
+        let frame = parse_frame(&mut Partial::new(data.as_slice())).unwrap();
+        let message = frame.to_server_msg().expect("Read the MESSAGE frame");
+
+        let FromServer::Message {
+            ack, message_id, ..
+        } = message.content
+        else {
+            panic!("Expected a MESSAGE frame");
+        };
+        assert_eq!(ack.as_deref(), Some("ack-1"));
+        assert_ne!(
+            ack.as_deref(),
+            Some(message_id.as_str()),
+            "The two are different values, which is the whole point"
+        );
+    }
+
+    /// Tests that a MESSAGE needing no acknowledgment has no ack value
+    ///
+    /// The header is only sent for a subscription in client or
+    /// client-individual mode, so in auto mode there is nothing to quote.
+    ///
+    /// If this test fails, callers are handed an acknowledgment value that the
+    /// broker never issued.
+    #[test]
+    fn a_message_in_auto_mode_has_no_ack_value() {
+        let data =
+            b"MESSAGE\ndestination:/queue/a\nmessage-id:mid-1\nsubscription:sub-1\n\nbody\x00";
+        let frame = parse_frame(&mut Partial::new(data.as_slice())).unwrap();
+        let message = frame.to_server_msg().expect("Read the MESSAGE frame");
+
+        let FromServer::Message { ack, .. } = message.content else {
+            panic!("Expected a MESSAGE frame");
+        };
+        assert_eq!(ack, None);
     }
 }

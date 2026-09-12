@@ -82,6 +82,13 @@ pub enum FromServer {
         message_id: String,
         /// Subscription identifier this message relates to
         subscription: String,
+        /// Value to acknowledge this message with
+        ///
+        /// Present when the subscription asked for explicit acknowledgment.
+        /// Pass it as the `id` of [`ToServer::Ack`] or [`ToServer::Nack`] —
+        /// acknowledging by `message_id` is the STOMP 1.0 and 1.1 rule, and a
+        /// 1.2 broker answers an ERROR and closes the connection.
+        ack: Option<String>,
         /// All headers included in the message
         headers: Vec<(String, String)>,
         /// Optional message body
@@ -191,7 +198,10 @@ pub enum ToServer {
     /// Used with 'client' or 'client-individual' acknowledgment modes to
     /// confirm successful processing of a message.
     Ack {
-        /// Message or subscription identifier to acknowledge
+        /// The `ack` field of the [`FromServer::Message`] being acknowledged
+        ///
+        /// Not its `message_id`: that is the STOMP 1.0 and 1.1 rule, and a 1.2
+        /// broker answers an ERROR and closes the connection.
         id: String,
         /// Optional transaction identifier
         transaction: Option<String>,
@@ -202,7 +212,9 @@ pub enum ToServer {
     /// Used with 'client' or 'client-individual' acknowledgment modes to
     /// indicate that a message could not be processed successfully.
     Nack {
-        /// Message or subscription identifier to negative-acknowledge
+        /// The `ack` field of the [`FromServer::Message`] being rejected
+        ///
+        /// Not its `message_id`, for the same reason as [`ToServer::Ack`].
         id: String,
         /// Optional transaction identifier
         transaction: Option<String>,

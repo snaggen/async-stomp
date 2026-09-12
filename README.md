@@ -322,11 +322,11 @@ async fn main() -> Result<(), anyhow::Error> {
         
     conn.send(subscribe_client_ack).await?;
     
-    // When processing messages, acknowledge them manually
-    // (assuming you've received a message with ID "message-123")
+    // Acknowledge with the `ack` field of the message being acknowledged,
+    // which the broker supplies on every MESSAGE in this mode
     conn.send(
         ToServer::Ack {
-            id: "message-123".to_string(),
+            id: ack_from_the_message.clone(),
             transaction: None,
         }
         .into()
@@ -335,7 +335,7 @@ async fn main() -> Result<(), anyhow::Error> {
     // Or negative-acknowledge if processing failed
     conn.send(
         ToServer::Nack {
-            id: "message-456".to_string(),
+            id: ack_from_the_message,
             transaction: None,
         }
         .into()
@@ -355,12 +355,12 @@ STOMP supports three acknowledgment modes:
 2. **Client**
    - The client must explicitly acknowledge messages
    - An ACK acknowledges all messages received so far on the connection
-   - Example: `vec![("ack".to_string(), "client".to_string())]`
+   - Example: `.headers(vec![("ack".to_string(), "client".to_string())])`
 
 3. **Client-Individual**
    - The client must explicitly acknowledge each individual message
    - Each message must be acknowledged separately
-   - Example: `vec![("ack".to_string(), "client-individual".to_string())]`
+   - Example: `.headers(vec![("ack".to_string(), "client-individual".to_string())])`
 
 #### **Example with Auto Acknowledgment (Default)**
 
@@ -391,18 +391,21 @@ conn.send(subscribe_individual).await?;
 // Process messages in a loop
 while let Some(message) = conn.next().await {
     if let Ok(msg) = message {
-        if let FromServer::Message { message_id, body, .. } = msg.content {
+        if let FromServer::Message { ack, body, .. } = msg.content {
             // Process the message...
-            println!("Processing message: {}", message_id);
-            
-            // Individual acknowledgment after successful processing
-            conn.send(
-                ToServer::Ack {
-                    id: message_id,
-                    transaction: None,
-                }
-                .into()
-            ).await?;
+
+            // Acknowledge with the `ack` field, never with `message_id`:
+            // that is the STOMP 1.0/1.1 rule, and a 1.2 broker answers an
+            // ERROR and closes the connection.
+            if let Some(id) = ack {
+                conn.send(
+                    ToServer::Ack {
+                        id,
+                        transaction: None,
+                    }
+                    .into()
+                ).await?;
+            }
         }
     }
 }
