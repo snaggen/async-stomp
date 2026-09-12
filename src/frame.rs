@@ -318,18 +318,24 @@ fn expect_raw_header<'a>(headers: &'a [(&'a [u8], Cow<'a, [u8]>)], key: &'a str)
 ///
 /// This helper function converts raw binary headers to String pairs,
 /// which is more convenient for higher-level message types.
-fn all_headers<'a>(headers: &'a [(&'a [u8], Cow<'a, [u8]>)]) -> Vec<(String, String)> {
-    let mut res = Vec::new();
-    for &(k, ref v) in headers {
-        // Unescape any escape sequences in the header value
-        let unescaped = unescape_header_value(v);
-        let entry = (
-            String::from_utf8(k.to_vec()).unwrap(),
-            String::from_utf8(unescaped).unwrap(),
-        );
-        res.push(entry);
-    }
-    res
+fn all_headers<'a>(headers: &'a [(&'a [u8], Cow<'a, [u8]>)]) -> Result<Vec<(String, String)>> {
+    headers
+        .iter()
+        .map(|&(k, ref v)| header_to_string(k, v))
+        .collect()
+}
+
+/// Convert one header, unescaping its value, into a (String, String) pair
+///
+/// Headers are UTF-8 by the spec, so bytes that are not are a malformed frame
+/// rather than something to render as best we can.
+fn header_to_string(key: &[u8], value: &[u8]) -> Result<(String, String)> {
+    let key =
+        String::from_utf8(key.to_vec()).map_err(|_| anyhow!("Header name is not valid UTF-8"))?;
+    // Unescape any escape sequences in the header value
+    let value = String::from_utf8(unescape_header_value(value))
+        .map_err(|_| anyhow!("Value of header '{}' is not valid UTF-8", key))?;
+    Ok((key, value))
 }
 
 /// Extract optional headers that aren't in the expected_keys list
@@ -339,20 +345,13 @@ fn all_headers<'a>(headers: &'a [(&'a [u8], Cow<'a, [u8]>)]) -> Vec<(String, Str
 fn optional_headers<'a>(
     headers: &'a [(&'a [u8], Cow<'a, [u8]>)],
     expected_keys: &[&[u8]],
-) -> Option<Vec<(String, String)>> {
+) -> Result<Option<Vec<(String, String)>>> {
     let res: Vec<(String, String)> = headers
         .iter()
         .filter(|(k, _)| !expected_keys.contains(k))
-        .map(|(k, v)| {
-            // Unescape any escape sequences in the header value
-            let unescaped = unescape_header_value(v);
-            (
-                String::from_utf8(k.to_vec()).unwrap(),
-                String::from_utf8(unescaped).unwrap(),
-            )
-        })
-        .collect();
-    if res.is_empty() { None } else { Some(res) }
+        .map(|&(k, ref v)| header_to_string(k, v))
+        .collect::<Result<_>>()?;
+    Ok(if res.is_empty() { None } else { Some(res) })
 }
 
 /// Fetch a required header value by key from a collection of headers
@@ -411,7 +410,7 @@ impl<'a> Frame<'a> {
                 Send {
                     destination: eh(h, "destination")?,
                     transaction: fh(h, "transaction"),
-                    headers: optional_headers(h, expect_keys),
+                    headers: optional_headers(h, expect_keys)?,
                     body: self.body.map(|v| v.to_vec()),
                 }
             }
@@ -515,7 +514,7 @@ impl<'a> Frame<'a> {
                     destination: eh(h, "destination")?,
                     message_id: eh(h, "message-id")?,
                     subscription: eh(h, "subscription")?,
-                    headers: all_headers(h),
+                    headers: all_headers(h)?,
                     body: self.body.map(|v| v.to_vec()),
                 }
             }
@@ -1174,5 +1173,31 @@ subscription:sub-123\n\ntest message body\x00";
         };
         assert_eq!(session.as_deref(), Some("ID\\c1"));
         assert_eq!(server.as_deref(), Some("ActiveMQ\\n5"));
+    }
+
+    /// Tests that a header which is not valid UTF-8 is reported, not panicked on
+    ///
+    /// Headers are UTF-8 by the spec, so these bytes are a malformed frame. A
+    /// client has to reject them: the conversion runs inside the codec, on
+    /// whatever task polls the transport, where a panic takes the task with it.
+    ///
+    /// If this test fails, anything on the wire able to put a stray byte in a
+    /// header can bring the client down.
+    #[test]
+    fn a_header_that_is_not_utf8_is_an_error() {
+        let from_server =
+            b"MESSAGE\ndestination:/queue/a\nmessage-id:1\nsubscription:sub-1\nx-bin:\xff\xfe\n\n\x00";
+        let frame = parse_frame(&mut Partial::new(from_server.as_slice())).unwrap();
+        assert!(
+            frame.to_server_msg().is_err(),
+            "A MESSAGE with a non-UTF-8 header should be rejected"
+        );
+
+        let to_server = b"SEND\ndestination:/queue/a\nx-bin:\xff\xfe\n\n\x00";
+        let frame = parse_frame(&mut Partial::new(to_server.as_slice())).unwrap();
+        assert!(
+            frame.to_client_msg().is_err(),
+            "A SEND with a non-UTF-8 header should be rejected"
+        );
     }
 }
