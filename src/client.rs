@@ -384,11 +384,20 @@ async fn client_handshake(
     let msg = transport.next().await.transpose()?;
 
     // Check if the reply is a CONNECTED frame
-    if let Some(FromServer::Connected { .. }) = msg.as_ref().map(|m| &m.content) {
-        Ok(())
-    } else {
-        Err(anyhow!("unexpected reply: {:?}", msg))
+    let Some(FromServer::Connected { version, .. }) = msg.as_ref().map(|m| &m.content) else {
+        return Err(anyhow!("unexpected reply: {:?}", msg));
+    };
+
+    // CONNECT only ever offers 1.2, so another version back means the server
+    // ignored the negotiation. Running on regardless would mean acknowledging
+    // and escaping by rules this client does not implement, and the resulting
+    // misbehaviour is far harder to trace than a refused connection.
+    if version != "1.2" {
+        return Err(anyhow!(
+            "server negotiated STOMP {version}, this client speaks 1.2"
+        ));
     }
+    Ok(())
 }
 
 /// Builder to create a Subscribe message with optional custom headers
@@ -550,6 +559,7 @@ impl<S: Into<String>, I: Into<String>> Subscriber<S, I> {
 ///
 /// This codec handles the conversion between STOMP protocol frames and Rust types,
 /// implementing the tokio_util::codec::Encoder and Decoder traits.
+#[derive(Debug)]
 pub struct ClientCodec;
 
 impl Decoder for ClientCodec {
@@ -609,6 +619,7 @@ mod tests {
         client::{Connector, Subscriber},
     };
     use bytes::BytesMut;
+    use std::time::Duration;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
 
@@ -848,5 +859,55 @@ mod tests {
         let frame = String::from_utf8_lossy(&buffer);
 
         assert!(!frame.contains("ack:"), "{frame}");
+    }
+
+    /// Reads one whole frame, which ends at the first null byte
+    async fn read_frame(socket: &mut tokio::net::TcpStream) -> Vec<u8> {
+        let mut received = Vec::new();
+        while !received.ends_with(b"\0") {
+            let mut chunk = [0u8; 256];
+            let len = socket.read(&mut chunk).await.expect("Read a frame");
+            if len == 0 {
+                break;
+            }
+            received.extend_from_slice(&chunk[..len]);
+        }
+        received
+    }
+
+    /// Tests that a CONNECTED naming another version is refused
+    ///
+    /// CONNECT only ever offers 1.2, so a different version back means the
+    /// server ignored the negotiation. Carrying on would mean acknowledging and
+    /// escaping by rules this client does not implement.
+    ///
+    /// If this test fails, such a session is accepted and misbehaves later, far
+    /// from the cause.
+    #[tokio::test]
+    async fn handshake_refuses_a_version_it_did_not_ask_for() {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("Bind the test server");
+        let addr = listener.local_addr().expect("Test server address");
+
+        tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.expect("Accept a connection");
+            read_frame(&mut socket).await;
+            socket
+                .write_all(b"CONNECTED\nversion:1.1\n\n\0")
+                .await
+                .expect("Reply CONNECTED");
+            // Hold the socket open long enough for the client to read the frame
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        });
+
+        let error = Connector::builder()
+            .server(addr.to_string())
+            .virtualhost("test")
+            .connect()
+            .await
+            .expect_err("A CONNECTED naming 1.1 should be refused");
+
+        assert!(error.to_string().contains("1.1"), "{error}");
     }
 }
