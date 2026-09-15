@@ -71,6 +71,14 @@ async fn main() -> Result<(), anyhow::Error> {
 }
 ```
 
+A frame from the server larger than `DEFAULT_MAX_FRAME_SIZE` (100 MiB, the
+ActiveMQ and Artemis default) fails the stream rather than growing the read
+buffer without bound. Raise it with `.max_frame_size(bytes)`, alongside the
+matching setting on the broker.
+
+Only STOMP 1.2 is spoken: a server that answers CONNECT with another version is
+refused.
+
 ### Heart-beating
 
 An idle STOMP connection carries no traffic, and brokers cannot tell it apart from
@@ -135,7 +143,6 @@ reported:
 
 ```rust
 use async_stomp::client::Connector;
-use std::time::Duration;
 
 #[tokio::main]
 async fn main() -> Result<(), anyhow::Error> {
@@ -194,7 +201,7 @@ async fn main() -> Result<(), anyhow::Error> {
             transaction: None,
             headers: Some(vec![
                 ("content-type".to_string(), "text/plain".to_string()),
-                ("priority".to_string(), "high".to_string())
+                ("priority".to_string(), "9".to_string())
             ]),
             body: Some(b"Important message!".to_vec()),
         }
@@ -357,7 +364,7 @@ async fn main() -> Result<(), anyhow::Error> {
         .login("guest".to_string())
         .passcode("guest".to_string())
         .use_tls(true)                                    // Enable TLS
-        .tls_server_name("secure-stomp-server.example.com") // Server name for certificate validation
+        .tls_server_name("secure-stomp-server.example.com".to_string()) // Name to validate the certificate against
         .connect()
         .await?;
         
@@ -391,7 +398,8 @@ async fn main() -> Result<(), anyhow::Error> {
 STOMP offers different acknowledgment modes for message consumption:
 
 ```rust
-use async_stomp::{AckMode, client::{Connector, Subscriber}, ToServer};
+use futures::prelude::*;
+use async_stomp::{AckMode, client::{Connector, Subscriber}, FromServer, ToServer};
 
 #[tokio::main]
 async fn main() -> Result<(), anyhow::Error> {
@@ -407,28 +415,25 @@ async fn main() -> Result<(), anyhow::Error> {
         .id("sub-with-ack")
         .ack(AckMode::Client)
         .subscribe();
-        
+
     conn.send(subscribe_client_ack).await?;
-    
-    // Acknowledge with the `ack` field of the message being acknowledged,
-    // which the broker supplies on every MESSAGE in this mode
-    conn.send(
-        ToServer::Ack {
-            id: ack_from_the_message.clone(),
-            transaction: None,
+
+    while let Some(msg) = conn.next().await.transpose()? {
+        // In this mode the broker supplies an `ack` value on every MESSAGE
+        let FromServer::Message { ack: Some(id), body, .. } = msg.content else {
+            continue;
+        };
+
+        let processed = body.is_some(); // Process the message...
+
+        if processed {
+            conn.send(ToServer::Ack { id, transaction: None }.into()).await?;
+        } else {
+            // Negative-acknowledge if processing failed
+            conn.send(ToServer::Nack { id, transaction: None }.into()).await?;
         }
-        .into()
-    ).await?;
-    
-    // Or negative-acknowledge if processing failed
-    conn.send(
-        ToServer::Nack {
-            id: ack_from_the_message,
-            transaction: None,
-        }
-        .into()
-    ).await?;
-    
+    }
+
     Ok(())
 }
 ```
@@ -436,13 +441,13 @@ async fn main() -> Result<(), anyhow::Error> {
 STOMP supports three acknowledgment modes:
 
 1. **Auto** (default if not specified)
-   - Messages are automatically acknowledged by the client as soon as they are received
+   - The broker considers a message delivered as soon as it has sent it
    - No explicit acknowledgment is required
    - Example: `.ack(AckMode::Auto)`
 
 2. **Client**
    - The client must explicitly acknowledge messages
-   - An ACK acknowledges all messages received so far on the connection
+   - An ACK is cumulative: it acknowledges that message and every earlier one on the same subscription
    - Example: `.ack(AckMode::Client)`
 
 3. **Client-Individual**
@@ -510,22 +515,21 @@ conn.send(ToServer::Begin {
     transaction: transaction_id.to_string() 
 }.into()).await?;
 
-// Acknowledge multiple messages within the transaction
-conn.send(
-    ToServer::Ack {
-        id: "message-123".to_string(),
-        transaction: Some(transaction_id.to_string()),
+// Acknowledge the next two messages within the transaction
+for _ in 0..2 {
+    let Some(msg) = conn.next().await.transpose()? else {
+        break;
+    };
+    if let FromServer::Message { ack: Some(id), .. } = msg.content {
+        conn.send(
+            ToServer::Ack {
+                id,
+                transaction: Some(transaction_id.to_string()),
+            }
+            .into()
+        ).await?;
     }
-    .into()
-).await?;
-
-conn.send(
-    ToServer::Ack {
-        id: "message-124".to_string(), 
-        transaction: Some(transaction_id.to_string()),
-    }
-    .into()
-).await?;
+}
 
 // Commit the transaction to finalize all acknowledgments
 conn.send(ToServer::Commit { 
@@ -535,9 +539,13 @@ conn.send(ToServer::Commit {
 
 ### Connection Lifecycle Management
 
+The spec's clean shutdown is DISCONNECT with a receipt, then waiting for the
+RECEIPT before closing the socket, so that the client knows the server processed
+everything it was sent. `disconnect` does exactly that. Frames still in flight
+are discarded, so call it once you are finished reading.
+
 ```rust
-use futures::prelude::*;
-use async_stomp::{client::Connector, ToServer};
+use async_stomp::client::{Connector, disconnect};
 
 #[tokio::main]
 async fn main() -> Result<(), anyhow::Error> {
@@ -546,22 +554,12 @@ async fn main() -> Result<(), anyhow::Error> {
         .virtualhost("/")
         .connect()
         .await?;
-        
+
     // Use the connection...
-    
+
     // Gracefully disconnect when done
-    conn.send(
-        ToServer::Disconnect {
-            receipt: Some("disconnect-receipt".to_string())
-        }
-        .into()
-    ).await?;
-    
-    // Wait for the RECEIPT frame if requested
-    if let Some(msg) = conn.next().await {
-        // Check for receipt...
-    }
-    
+    disconnect(&mut conn, "disconnect-receipt").await?;
+
     Ok(())
 }
 ```
